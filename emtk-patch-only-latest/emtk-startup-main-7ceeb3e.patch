@@ -1,16 +1,150 @@
 diff --git a/framework/src/internal/utils/rpk_intercept.rs b/framework/src/internal/utils/rpk_intercept.rs
-index f5969ad..dcab3e0 100644
+index f5969ad..29ea260 100644
 --- a/framework/src/internal/utils/rpk_intercept.rs
 +++ b/framework/src/internal/utils/rpk_intercept.rs
-@@ -12,6 +12,7 @@ use windows::Win32::Storage::FileSystem::{
+@@ -12,9 +12,11 @@ use windows::Win32::Storage::FileSystem::{
      SetFilePointer,
  };
  use windows::Win32::System::IO::OVERLAPPED;
 +use windows::Win32::Foundation::FALSE;
  use windows::core::BOOL;
  
- use std::collections::{BTreeMap, HashSet};
-@@ -65,7 +66,7 @@ type TReadFile = unsafe extern "system" fn(
+-use std::collections::{BTreeMap, HashSet};
++use std::collections::{BTreeMap, HashMap, HashSet};
++use std::sync::atomic::{AtomicBool, Ordering};
+ use std::ffi::{CString, c_void};
+ use std::io::{Cursor, Read};
+ use std::path::PathBuf;
+@@ -49,14 +51,127 @@ static mut O_READ_FILE: *mut c_void = 0 as _;
+ 
+ pub unsafe fn register_hooks() {
+     unsafe {
+-        O_READ_FILE = ReadFile as *mut c_void;
++        let kernel32 = GetModuleHandleA(b"kernel32.dll\0".as_ptr());
++        O_READ_FILE = GetProcAddress(kernel32, b"ReadFile\0".as_ptr());
++        O_CREATE_FILE_W = GetProcAddress(kernel32, b"CreateFileW\0".as_ptr());
++        O_CREATE_FILE_A = GetProcAddress(kernel32, b"CreateFileA\0".as_ptr());
++        O_CLOSE_HANDLE = GetProcAddress(kernel32, b"CloseHandle\0".as_ptr());
++        if O_READ_FILE.is_null() || O_CREATE_FILE_W.is_null() || O_CREATE_FILE_A.is_null() || O_CLOSE_HANDLE.is_null() {
++            error!("kernel32 file functions not found; mod archives are not served");
++            return;
++        }
+ 
+         DetourTransactionBegin();
+         DetourAttach(&raw mut O_READ_FILE, read_file as _);
++        DetourAttach(&raw mut O_CREATE_FILE_W, create_file_w as _);
++        DetourAttach(&raw mut O_CREATE_FILE_A, create_file_a as _);
++        DetourAttach(&raw mut O_CLOSE_HANDLE, close_handle as _);
+         DetourTransactionCommit();
+     }
+ }
+ 
++/// Open handles of .rpk archives with the archive's final path, recorded when the file is opened, so a read never
++/// asks Windows for its handle's name (that was a system call on every read of every file the game made).
++static RPK_HANDLES: LazyLock<Mutex<HashMap<usize, PathBuf>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
++static RPK_ANY: AtomicBool = AtomicBool::new(false);
++
++static mut O_CREATE_FILE_W: *mut c_void = 0 as _;
++static mut O_CREATE_FILE_A: *mut c_void = 0 as _;
++static mut O_CLOSE_HANDLE: *mut c_void = 0 as _;
++
++type TCreateFileW =
++    unsafe extern "system" fn(*const u16, u32, u32, *mut c_void, u32, u32, *mut c_void) -> *mut c_void;
++type TCreateFileA =
++    unsafe extern "system" fn(*const u8, u32, u32, *mut c_void, u32, u32, *mut c_void) -> *mut c_void;
++type TCloseHandle = unsafe extern "system" fn(*mut c_void) -> i32;
++
++#[link(name = "kernel32")]
++unsafe extern "system" {
++    fn GetModuleHandleA(name: *const u8) -> *mut c_void;
++    fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
++    fn GetFinalPathNameByHandleW(file: *mut c_void, path: *mut u16, len: u32, flags: u32) -> u32;
++}
++
++/// Whether a NUL-terminated file name ends in ".rpk" (any case).
++unsafe fn ends_with_rpk<T: Copy + Into<u32>>(name: *const T) -> bool {
++    if name.is_null() {
++        return false;
++    }
++    let mut len = 0usize;
++    while len < 32768 && unsafe { (*name.add(len)).into() } != 0 {
++        len += 1;
++    }
++    if len < 4 {
++        return false;
++    }
++    let c = |i: usize| unsafe { (*name.add(len - 4 + i)).into() };
++    c(0) == '.' as u32 && (c(1) | 0x20) == 'r' as u32 && (c(2) | 0x20) == 'p' as u32 && (c(3) | 0x20) == 'k' as u32
++}
++
++fn remember(handle: *mut c_void) {
++    let mut buffer = vec![0u16; 1024];
++    let len = unsafe { GetFinalPathNameByHandleW(handle, buffer.as_mut_ptr(), buffer.len() as u32, 0) } as usize;
++    if len == 0 || len >= buffer.len() {
++        return;
++    }
++    let path = PathBuf::from(String::from_utf16_lossy(&buffer[..len]));
++    if let Ok(mut handles) = RPK_HANDLES.lock() {
++        handles.insert(handle as usize, path);
++        RPK_ANY.store(true, Ordering::Release);
++    }
++}
++
++fn rpk_path(handle: usize) -> Option<PathBuf> {
++    if !RPK_ANY.load(Ordering::Acquire) {
++        return None;
++    }
++    RPK_HANDLES.lock().ok()?.get(&handle).cloned()
++}
++
++unsafe extern "system" fn create_file_w(
++    name: *const u16,
++    access: u32,
++    share: u32,
++    security: *mut c_void,
++    disposition: u32,
++    flags: u32,
++    template: *mut c_void,
++) -> *mut c_void {
++    let original: TCreateFileW = unsafe { mem::transmute(O_CREATE_FILE_W) };
++    let handle = unsafe { original(name, access, share, security, disposition, flags, template) };
++    if handle as isize != -1 && unsafe { ends_with_rpk(name) } {
++        remember(handle);
++    }
++    handle
++}
++
++unsafe extern "system" fn create_file_a(
++    name: *const u8,
++    access: u32,
++    share: u32,
++    security: *mut c_void,
++    disposition: u32,
++    flags: u32,
++    template: *mut c_void,
++) -> *mut c_void {
++    let original: TCreateFileA = unsafe { mem::transmute(O_CREATE_FILE_A) };
++    let handle = unsafe { original(name, access, share, security, disposition, flags, template) };
++    if handle as isize != -1 && unsafe { ends_with_rpk(name) } {
++        remember(handle);
++    }
++    handle
++}
++
++unsafe extern "system" fn close_handle(handle: *mut c_void) -> i32 {
++    if RPK_ANY.load(Ordering::Acquire) {
++        if let Ok(mut handles) = RPK_HANDLES.lock() {
++            handles.remove(&(handle as usize));
++        }
++    }
++    let original: TCloseHandle = unsafe { mem::transmute(O_CLOSE_HANDLE) };
++    unsafe { original(handle) }
++}
++
+ type TReadFile = unsafe extern "system" fn(
+     h_file: HANDLE,
+     lp_buffer: *mut c_void,
+@@ -65,7 +180,7 @@ type TReadFile = unsafe extern "system" fn(
      lp_overlapped: *mut OVERLAPPED,
  ) -> BOOL;
  
@@ -19,7 +153,30 @@ index f5969ad..dcab3e0 100644
      h_file: HANDLE,
      lp_buffer: *mut c_void,
      n_number_of_bytes_to_read: u32,
-@@ -285,87 +286,81 @@ unsafe fn read_file(
+@@ -76,19 +191,9 @@ unsafe fn read_file(
+         LazyLock::new(|| unsafe { mem::transmute(O_READ_FILE) });
+ 
+     'try_proxy_file: {
+-        // Get the file name from the handle.
+-        let file_name: PathBuf = {
+-            let mut file_name = vec![0u8; MAX_PATH as usize];
+-            let len =
+-                unsafe { GetFinalPathNameByHandleA(h_file, &mut file_name, FILE_NAME_NORMALIZED) };
+-            file_name.truncate(len as usize);
+-            let Ok(file_name) = CString::new(file_name) else {
+-                break 'try_proxy_file;
+-            };
+-            let Ok(file_name) = file_name.to_str() else {
+-                break 'try_proxy_file;
+-            };
+-            PathBuf::from(file_name.to_string())
++        // Only handles recorded as .rpk archives when they were opened are served here.
++        let Some(file_name) = rpk_path(h_file.0 as usize) else {
++            break 'try_proxy_file;
+         };
+ 
+         if file_name.extension().is_none_or(|ext| ext != "rpk") {
+@@ -285,87 +390,81 @@ unsafe fn read_file(
              let buffer = buffer.into_iter().flatten().collect::<Vec<_>>();
  
              unsafe {
@@ -172,7 +329,7 @@ index f5969ad..dcab3e0 100644
          }
      }
  
-@@ -379,3 +374,48 @@ unsafe fn read_file(
+@@ -379,3 +478,48 @@ unsafe fn read_file(
          )
      }
  }

@@ -176,7 +176,22 @@ static void reloadControl(uint64_t now){
  if(!reloadCallback||!reloadCallback(reloadRuntime.c_str(),request.c_str()))host.report("runtime","error","Reload request failed; inspect EMTK and runtime logs");
  else host.report("runtime","info","Reload source queued; callback success is not script acceptance");
 }
+// What the runtime costs each presented frame (its pulse, the Lua callbacks and tasks inside it, and the console
+// overlay), written to ScriptRuntime.log every 30 s as an average and the worst frame. QueryPerformanceCounter only.
+namespace frametime {
+static LARGE_INTEGER frequency{};static double pulse=0,lua=0,overlay=0,pulseWorst=0,luaWorst=0;static uint64_t frames=0,next=0;
+static LARGE_INTEGER stamp(){LARGE_INTEGER t;QueryPerformanceCounter(&t);return t;}
+static double since(LARGE_INTEGER a){if(!frequency.QuadPart)QueryPerformanceFrequency(&frequency);const auto b=stamp();return double(b.QuadPart-a.QuadPart)*1000.0/double(frequency.QuadPart);}
+static void publish(uint64_t tick){
+ if(!next){next=tick+30000;return;}if(tick<next||!frames)return;
+ char line[240];snprintf(line,sizeof line,"Frame cost over %llu frames: pulse %.2f ms average (%.2f worst), of it Lua %.2f ms (%.2f worst); console overlay %.2f ms",
+  (unsigned long long)frames,pulse/double(frames),pulseWorst,lua/double(frames),luaWorst,overlay/double(frames));
+ host.report("runtime","info",line);pulse=lua=overlay=pulseWorst=luaWorst=0;frames=0;next=tick+30000;
+}
+struct Pulse {LARGE_INTEGER start=stamp();~Pulse(){const double d=since(start);pulse+=d;pulseWorst=(std::max)(pulseWorst,d);++frames;}};
+}
 static void pumpPresentation(uint64_t thread,uint64_t windowThread,const std::string& phase,uint64_t player,uint64_t now){
+ frametime::Pulse timing;frametime::publish(now);
  if(!runtimeEnabled||!frameReady||!session.begin(thread,windowThread,phase,player,now))return;
  worldPulse=phase=="session";worldCaptured=false;worldCopy={};
  charactersCaptured=false;charactersCopy={};
@@ -208,7 +223,8 @@ static void pumpPresentation(uint64_t thread,uint64_t windowThread,const std::st
  }
  combat::deliver(host,captureCharacters());zones::deliver(host,captureCharacters());scriptcommands::deliver(host,worldPulse);gamemessages::deliver(host);
  sharedlua::deliver(host);memberreads::deliver(host);gear::deliver(host);modsettings::deliver(host);sounds::deliver(host);gestures::deliver(host);itemids::deliver(host);recordmerge::deliver(host);npcpowers::deliver(host,captureCharacters());dialogs::deliver();powers::deliver(host);powers::step(host,phase);
- session.tickTimers();host.flushSettings();
+ {const auto start=frametime::stamp();session.tickTimers();const double d=frametime::since(start);frametime::lua+=d;frametime::luaWorst=(std::max)(frametime::luaWorst,d);}
+ host.flushSettings();
 }
 #include "presentation.h"
 static bool start(){

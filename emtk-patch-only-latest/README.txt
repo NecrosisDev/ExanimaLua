@@ -12,7 +12,7 @@ profile priority order. Only one EMTK file changes: emtk_framework.dll. Your lau
 
 What is here
   emtk_framework.dll                 the patched framework, ready to drop in
-                                     sha256 f7c81bd99cf5071284abf69365abc922547f04bafe3fd3e47efa866895de6ea8
+                                     sha256 5ae45004ba9d5e3710748765b80595c433a24a48c03d16ed44dc73a138c03ea8
   emtk-startup-main-7ceeb3e.patch    the source change, if you prefer to build it yourself
   LICENSE-MIT, LICENSE-APACHE        EMTK's licences (the patch is under the same terms)
 
@@ -52,3 +52,5 @@ Notes
   - Fixes stock EMTK serving mod archives wrongly: a game read that starts partway into a packed file, or
     continues where the last read stopped, now gets the right bytes. Before, any enabled mod could give wrong
     textures and lighting, empty inventories or a freeze.
+  - Ordinary file reads are no longer slowed: archives are recognised when they are opened, so the framework no
+    longer asks Windows for the name of every file the game reads.

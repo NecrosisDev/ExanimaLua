@@ -156,7 +156,7 @@ static void menuDraw(uintptr_t obj){
 }
 static bool(*formOpen)()=nullptr;   // settingstabs::optionsOpen, set by the plugin (that header comes later)
 static int menuHit(uintptr_t obj,int x,int y,uintptr_t* outObj,int* outIndex){
- if(formOpen&&titleMenu(obj)&&formOpen())return 0;   // the buttons are hidden while Settings is open
+ if(formOpen&&formOpen())return 0;   // the buttons are hidden while Settings is open
  const int r=originalMenuHit(obj,x,y,outObj,outIndex);if(r>0||!live(obj))return r;
  const int k=overflowHit(obj,x,y,outObj,outIndex);return k>=1&&k<=armed.count-baseRows?baseRows+k:r;
 }

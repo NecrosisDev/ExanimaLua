@@ -10,8 +10,9 @@ static bool titleObject(uintptr_t object){
 // The one detour on the menu draw 0x128f30: it also carries the shared title rows (title_rows_bridge.h), which
 // therefore never hook this function a second time.
 static void observeMenu(uintptr_t object){
- // While Settings is open over the title menu, the menu's buttons are not drawn (they showed through the form).
- const bool hidden=runtimeEnabled&&titleObject(object)&&settingstabs::optionsOpen();
+ // While Settings is open, the menu under it (the title menu, or the same menu opened in game) is not drawn: its
+ // buttons showed through the form.
+ const bool hidden=runtimeEnabled&&settingstabs::optionsOpen();
  if(hidden){}else if(titlerows::installed)titlerows::menuDraw(object);else originalMenuDraw(object);
  if(runtimeEnabled&&titleObject(object))titleDrawThread=GetCurrentThreadId();
 }
@@ -31,7 +32,7 @@ static void presentationBody(HDC dc){
 static void presentationSafe(HDC dc){try{presentationBody(dc);}catch(...){host.report("runtime","error","Lifecycle pulse fault; runtime disabled");runtimeEnabled=false;gamebridge::active=false;}}
 static void present(){
  // The mod console and notices are drawn into the frame the game is about to present (console_bridge.h).
- if(runtimeEnabled&&readable(base+0x499610,8))console::draw(*(HDC*)(base+0x499610));
+ if(runtimeEnabled&&readable(base+0x499610,8)){const auto start=frametime::stamp();console::draw(*(HDC*)(base+0x499610));frametime::overlay+=frametime::since(start);}
  originalPresent();
  __try{if(readable(base+0x499610,8))presentationSafe(*(HDC*)(base+0x499610));}
  __except(EXCEPTION_EXECUTE_HANDLER){runtimeEnabled=false;gamebridge::active=false;}

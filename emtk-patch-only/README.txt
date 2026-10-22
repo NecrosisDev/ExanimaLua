@@ -13,7 +13,7 @@ mods stay as they are.
 Applies to
   EMTK 0.1.0-dev, source commit b422845374d579e155dd4a07d85b5ebc0f779650 (6 September 2025), Windows x64.
   The DLL here was built from that commit plus emtk-startup.patch.
-  emtk_framework.dll  sha256 f1265b99a1f33d42c50f5ad606513d7ad2537c0feb3ee924aa91a01899d3abaf
+  emtk_framework.dll  sha256 6d517b48a2288513f93ad40c423d075521ae1ee13ca2d2c4d3abbf77a92be169
 
 What is here
   emtk_framework.dll   the patched framework, ready to drop in
@@ -51,3 +51,5 @@ Notes
   - Fixes stock EMTK serving mod archives wrongly: a game read that starts partway into a packed file, or
     continues where the last read stopped, now gets the right bytes. Before, any enabled mod could give wrong
     textures and lighting, empty inventories or a freeze.
+  - Ordinary file reads are no longer slowed: archives are recognised when they are opened, so the framework no
+    longer asks Windows for the name of every file the game reads.
