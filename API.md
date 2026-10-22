@@ -1,6 +1,6 @@
 # Exanima Lua API
 
-This is the reference for runtime 0.28.0: Lua API generation 1, revision 28.
+This is the reference for runtime 0.28.1: Lua API generation 1, revision 28.
 It runs on Exanima 0.9.5.2g (Steam build 25803178, Windows x64) and its Hellmode
 build. The Reference section lists everything an addon can call; the sections
 after it are the detailed contracts, newest release first.

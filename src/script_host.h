@@ -36,7 +36,7 @@ enum Capability : uint64_t { events=1, items=2, contents=4, openStorage=8, unloc
 inline constexpr uint64_t itemApiCapabilities=events|items|contents|openStorage|unlockDoor;
 // The runtime's version as addons see it: api.version is the Lua API generation (unchanged while additions stay
 // compatible), api.revision counts additive releases, so `api.revision >= 24` means "0.24.0 or later".
-inline constexpr const char* runtimeVersion="0.28.0";inline constexpr int apiRevision=28;
+inline constexpr const char* runtimeVersion="0.28.1";inline constexpr int apiRevision=28;
 struct CapabilityName {const char* name;uint64_t bit;};
 inline constexpr CapabilityName capabilityNames[]={
  {"events.item_use",events},{"items.read",items},{"containers.read",contents},{"containers.open",openStorage},{"doors.unlock",unlockDoor},

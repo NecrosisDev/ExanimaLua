@@ -14,7 +14,7 @@ HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[1] if len(HERE.parents)>1 else HERE   # a repository at a drive root has no workspace above it
 ID='com.necrosis.script-runtime'
 # The one place the release number is written; src/script_host.h runtimeVersion must match (checked below).
-VERSION='0.28.0'
+VERSION='0.28.1'
 
 # Files this runtime shares with the rest of the workspace (their owners live there). A standalone copy made by
 # export.py carries snapshots of them in third_party/, which are used when present.
