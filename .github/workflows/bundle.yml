@@ -38,7 +38,12 @@ jobs:
         run: python -X utf8 -B bundle.py --download
       - name: Publish it on the all-mods release
         run: |
-          notes="$(printf 'Every NecrosisDev mod in one download, with the patched EMTK and an installer.\nUnzip it and run Install.cmd with Exanima closed.\n\nBuilt from:\n')$(sed 's/^/- /' dist/ExanimaMods-sources.txt)"
+          notes="Every NecrosisDev mod in one download, with the patched EMTK and an installer.
+          Unzip it and run Install.cmd with Exanima closed.
+
+          Built from:
+          $(sed 's/^/- /' dist/ExanimaMods-sources.txt)"
+          notes="$(sed 's/^ *//' <<< "$notes")"
           if ! gh release view all-mods --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             gh release create all-mods dist/ExanimaMods.zip dist/ExanimaMods.zip.sha256 --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" --title "All mods" --notes "$notes" --latest
