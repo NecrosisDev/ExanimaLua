@@ -198,6 +198,7 @@ public:
   bool(*dialog)(const std::string& title,const std::string& text)=nullptr;
   bool(*readPackage)(const std::string& package,const std::string& member,std::string& out,std::string& why)=nullptr;
   bool(*fires)(std::vector<FireInfo>& out)=nullptr;
+  bool(*writeAsset)(const std::string& owner,const std::string& path,const std::string& bytes,std::string& why)=nullptr;
  };
 private:
  // What a subscription listens to; item-use handlers also carry the model name they match.
@@ -1130,6 +1131,16 @@ private:
   if(!a->owner->shared.readPackage||!a->owner->shared.readPackage(std::string(package,p),std::string(member,n),out,why)){lua_pushnil(L);lua_pushstring(L,why.empty()?"unavailable":why.c_str());return 2;}
   lua_pushlstring(L,out.data(),out.size());return 1;
  }
+ // assets.write(path, bytes): a file in this addon's cache/ folder (8 MiB at most), true or nil and a reason. Pair it
+ // with a [script.overrides] entry pointing at it to serve what was computed this session from the next game start.
+ static int writeAssetFile(lua_State* L){
+  auto a=context(L);if(!(a->caps&assetsRead)||!(a->owner->available&assetsRead))return luaL_error(L,"assets.write needs assets.read");
+  size_t n=0,size=0;const char* path=luaL_checklstring(L,1,&n);const char* bytes=luaL_checklstring(L,2,&size);
+  if(!n||n>260||std::memchr(path,0,n))return luaL_error(L,"assets.write takes a path such as cache/humanoid.rsq");
+  std::string why;
+  if(!a->owner->shared.writeAsset||!a->owner->shared.writeAsset(a->id,std::string(path,n),std::string(bytes,size),why)){lua_pushnil(L);lua_pushstring(L,why.empty()?"unavailable":why.c_str());return 2;}
+  lua_pushboolean(L,1);return 1;
+ }
  // levels.add_placement(level, item_id, {x, y, z}[, yaw_degrees]): a loose item added to `level` (a member such
  // as "exanima01.rfc") whenever the game reads it; declare while loading, before the level is read.
  static int addPlacement(lua_State* L){
@@ -1652,7 +1663,7 @@ private:
   lua_pushcfunction(L,enableTitleRow);lua_setfield(L,-2,"set_enabled");lua_pushcfunction(L,setTitleSubtitle);lua_setfield(L,-2,"set_subtitle");lua_setglobal(L,"title");
   lua_newtable(L);lua_pushcfunction(L,serveLevel);lua_setfield(L,-2,"serve");lua_pushcfunction(L,readPackageMember);lua_setfield(L,-2,"read");lua_pushcfunction(L,clearServedLevels);lua_setfield(L,-2,"clear_served");
   lua_pushcfunction(L,driveLevel);lua_setfield(L,-2,"drive");lua_pushcfunction(L,newGameLevel);lua_setfield(L,-2,"new_game");lua_pushcfunction(L,travelLevel);lua_setfield(L,-2,"travel");lua_pushcfunction(L,addPlacement);lua_setfield(L,-2,"add_placement");lua_setglobal(L,"levels");
-  lua_newtable(L);lua_pushcfunction(L,readAsset);lua_setfield(L,-2,"read");lua_setglobal(L,"assets");
+  lua_newtable(L);lua_pushcfunction(L,readAsset);lua_setfield(L,-2,"read");lua_pushcfunction(L,writeAssetFile);lua_setfield(L,-2,"write");lua_setglobal(L,"assets");
   lua_newtable(L);lua_pushcfunction(L,notifyText);lua_setfield(L,-2,"notify");lua_pushcfunction(L,playSound);lua_setfield(L,-2,"sound");lua_pushcfunction(L,showDialog);lua_setfield(L,-2,"dialog");lua_setglobal(L,"ui");
   lua_newtable(L);lua_pushcfunction(L,defineSettings);lua_setfield(L,-2,"define");lua_pushcfunction(L,getModSetting);lua_setfield(L,-2,"get");lua_setglobal(L,"settings");
   lua_newtable(L);lua_pushcfunction(L,damagePlayer);lua_setfield(L,-2,"damage");lua_pushcfunction(L,pushPlayer);lua_setfield(L,-2,"push");lua_pushcfunction(L,placePlayer);lua_setfield(L,-2,"place");lua_setglobal(L,"player");

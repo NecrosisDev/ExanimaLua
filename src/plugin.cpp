@@ -292,7 +292,7 @@ static bool start(){
  hitSoundPossible=worldPossible&&charactersPossible&&readable(base+0x4f0940,56)&&readable(base+0x4f0830,8);titlerows::formOpen=settingstabs::optionsOpen;scripting::Host::subtitleSetter=titlerows::setSubtitle;modsettings::start(controlDirectory);
  if(nativePossible&&!sounds::possible&&!controlDirectory.empty()){sounds::available(controlDirectory.parent_path().parent_path());if(!sounds::possible)host.report("runtime","warn","ui.sound unavailable: Sound.rpk index or the sound functions did not match");}
  host.setSharedApi({sharedlua::addRow,sharedlua::removeRow,sharedlua::enableRow,sharedlua::serve,sharedlua::clearServed,forgetShared,newgame::arm,sharedlua::readAsset,console::notify,
-  modsettings::defineSettings,modsettings::readSetting,sounds::request,addPlacement,gestures::request,gear::queueWear,npcpowers::request,dialogs::request,sharedlua::readPackage,worldfires::readFires});
+  modsettings::defineSettings,modsettings::readSetting,sounds::request,addPlacement,gestures::request,gear::queueWear,npcpowers::request,dialogs::request,sharedlua::readPackage,worldfires::readFires,sharedlua::writeAsset});
  if(nativePossible&&!gestures::possible)gestures::available();
  if(nativePossible&&!dialogs::possible)dialogs::available();
  if(nativePossible&&!npcpowers::possible)npcpowers::available();

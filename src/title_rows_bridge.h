@@ -158,12 +158,14 @@ static void menuBuild(int mode){
 // (0x128f30: row k at y = round(screen height * +0x200) + [0x49a690] + (k-1) * round(+0x1fc * +0x158), centred).
 // The draw selects the game's text shader first, as the game's own text draws do (0x2143b0(2)): a hovered row leaves
 // the highlight shader bound, and text drawn through it shows as a pale box. The previous mode is put back.
-// 0x27080(font) selects a font (the small one is *[0x49a8f0]), 0x27000(text) measures, 0x27180(x, y, text) draws;
+// 0x27080(font) selects a font, 0x27000(text) measures, 0x27180(x, y, text) draws. The font is the game's GUI font
+// *[0x49a8e0] (the one its windows and buttons use, 0x2f060), which is resident at the title screen; the HUD's small
+// font (0x49a8f0) is not loaded there yet and drew as a pale box of untextured glyph quads.
 // the menu's title font and the previous current font are put back afterwards (docs/reviews/title-subtitle-review.md).
 static bool subtitleFont=false;
 static void drawSubtitles(uintptr_t obj){
- if(!subtitleFont||!armed.on||!readable(base+rva::guiDesktop,8)||!readable(base+0x49a690,4)||!readable(base+0x49a8f0,8)||!readable(base+0x49a670,8)||!readable(base+0x49a6b0,8))return;
- const uintptr_t screen=*(uintptr_t*)(base+rva::guiDesktop),font=*(uintptr_t*)(base+0x49a8f0);if(!screen||!font||!readable(screen+0x2c,4)||!readable(font+0x30,8))return;
+ if(!subtitleFont||!armed.on||!readable(base+rva::guiDesktop,8)||!readable(base+0x49a690,4)||!readable(base+0x49a8e0,8)||!readable(base+0x49a670,8)||!readable(base+0x49a6b0,8))return;
+ const uintptr_t screen=*(uintptr_t*)(base+rva::guiDesktop),font=*(uintptr_t*)(base+0x49a8e0);if(!screen||!font||!readable(screen+0x2c,4)||!readable(font+0x30,8))return;
  const float W=float(*(int*)(screen+0x28)),H=float(*(int*)(screen+0x2c));
  const float row=std::nearbyint(float(*(int*)(obj+0x1fc))**(float*)(obj+0x158));if(!(row>0.f)||!(H>0.f))return;
  float y=std::nearbyint(H**(float*)(obj+0x200))+float(*(int*)(base+0x49a690));

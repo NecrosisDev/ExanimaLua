@@ -66,3 +66,10 @@ and parents it with `0x50170`, returns the fire unattached), `0x149740` (a torch
   flames, size from controller `+0x12c`, sorted by distance; published as a seqlock table of 64 for the
   `fire_nodes` export and kept for `world.fires`.
 - Weapon targets are refused: the held-weapon scene node is not traced yet.
+
+## assets.write (r48)
+
+- Ordinary file IO into `mods/<id>/cache/` only: the path is canonicalised and must stay inside that folder (no
+  `..` escape), 8 MiB at most, written to `<name>.new` and renamed over the old file. No game memory. Paired with
+  the existing `[script.overrides]` (read at addon submission, before the game's first read) it lets an addon serve
+  a member it computed last session from the next game start.

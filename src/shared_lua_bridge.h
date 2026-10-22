@@ -161,6 +161,23 @@ static bool readAsset(const std::string& owner,const std::string& relative,std::
  std::ifstream file(path,std::ios::binary);if(!file){why="the file could not be opened";return false;}
  out.assign(std::istreambuf_iterator<char>(file),std::istreambuf_iterator<char>());return true;
 }
+// assets.write: a file under mods/<id>/cache/ only (created as needed), 8 MiB at most, written whole through a
+// temporary name. With a manifest override pointing at it ([script.overrides] "Resource.rpk/humanoid.rsq" =
+// "cache/humanoid.rsq"), what an addon computed in one session is served from the next game start, before the game's
+// first read.
+static bool writeAsset(const std::string& owner,const std::string& relative,const std::string& bytes,std::string& why){
+ if(modsDirectory.empty()){why="the addon folder is unknown";return false;}
+ if(bytes.size()>8*1024*1024){why="at most 8 MiB";return false;}
+ std::error_code error;const auto folder=std::filesystem::weakly_canonical(modsDirectory/std::filesystem::u8path(owner),error);
+ if(error||folder.parent_path()!=std::filesystem::weakly_canonical(modsDirectory,error)){why="the addon folder is unknown";return false;}
+ const auto cache=folder/L"cache";const auto path=std::filesystem::weakly_canonical(folder/std::filesystem::u8path(relative),error);
+ if(error||path.native().compare(0,cache.native().size()+1,(cache/L"").native())!=0){why="the path must be inside the addon's cache/ folder";return false;}
+ std::filesystem::create_directories(path.parent_path(),error);if(error){why="the folder could not be made";return false;}
+ const auto temporary=path.native()+L".new";
+ {std::ofstream out(temporary,std::ios::binary|std::ios::trunc);if(!out){why="the file could not be opened";return false;}out.write(bytes.data(),std::streamsize(bytes.size()));if(!out){why="the file could not be written";return false;}}
+ std::filesystem::rename(temporary,path,error);if(error){std::filesystem::remove(temporary,error);why="the file could not be replaced";return false;}
+ return true;
+}
 // levels.read: a member of a package in the game folder (the mods folder's parent), read from the file itself, so
 // nothing served applies. The .rpk layout: u32 magic 01 0c bf af, u32 table length, 32-byte rows {name[16],
 // u32 offset, u32 size, u32 type, u32}, data at 8 + table length + offset.

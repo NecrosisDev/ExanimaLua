@@ -211,6 +211,7 @@ mean" hint; in `optional` it is logged and ignored.
 | `ui.sound(name[, volume])` | boolean | a single sound from `Sound.rpk` by its member name, any case (such as `"ReprSphereA1"`, `"cleanitem01"`), played at the player on the next pulse the way the game's repair and clean sounds are (volume 0..1, default 0.15, slight random pitch); false for a name the archive does not have or when 8 are already waiting |
 | `settings.define(title, rows)` | nothing | while loading only, once: this addon's section of the Mod Settings tab; see Mod Settings |
 | `settings.get(key)` | boolean, number, string or key code | the value in the player's active profile, or the row's default |
+| `assets.write(path, bytes)` | true, or nil and a reason | a file in the addon's own `cache/` folder (`mods/<id>/cache/...`, made as needed), 8 MiB at most, replaced whole; with `assets.read`. Point a `[script.overrides]` entry at it (`"Resource.rpk/humanoid.rsq" = "cache/humanoid.rsq"`) to serve what this session computed from the next game start, before the game first reads the member (0.28.0) |
 | `assets.read(path)` | bytes, or nil and a reason | a file under the addon's own folder (`mods/<id>`), 8 MiB at most; the bytes count against the addon's 8 MiB Lua memory, not its 1 MiB source budget |
 | `title.remove_row(label)` | boolean | |
 | `title.set_enabled(label, on)` | boolean | from callbacks; hides or shows the row from the next menu draw |

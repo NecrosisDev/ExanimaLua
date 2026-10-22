@@ -52,3 +52,11 @@ label ends at its row y and the next label starts at `y + row - [0x49a68c]` (`[0
 height; the small font's is `font+0xc`). A subtitle is drawn centred in that gap when the gap is at least its height
 plus 2 pixels; otherwise on the same line, 0.3 rows right of its label (the label width is the row record's), and not
 at all if that would leave the screen. Both values are read, never written.
+
+## r48b: the GUI font
+
+Hunter's r47 screenshot: the line sat in the right gap but still drew as a pale box of thin strokes with no row
+hovered. All the game's text routines (0x27180, 0x27310, 0x27490) lay glyphs out the same way from the current
+font's metrics and texture, so the box is untextured glyph quads: the HUD's small font *[0x49a8f0] is not resident
+at the title screen. The line now uses the GUI font *[0x49a8e0], which the game's own windows and buttons draw with
+at the title screen (0x2f060 selects it before each control's text).
