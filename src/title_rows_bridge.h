@@ -151,8 +151,11 @@ static void menuBuild(int mode){
  originalMenuBuild(mode);armed.on=false;releaseRetired();   // the builder wrote all six rows again
  uintptr_t obj=0;if(mode==0&&copyWorldMemory(base+rva::menuObject,&obj,8)&&titleMenu(obj)&&anyRows())tryArm(obj);
 }
-// Subtitles, drawn in the game's own small font right after the menu draw, with the layout that draw used
+// Subtitles, drawn in the game's own small font right after the menu draw, centred below the menu's last row (so a
+// line never sits on another row), with the layout that draw used
 // (0x128f30: row k at y = round(screen height * +0x200) + [0x49a690] + (k-1) * round(+0x1fc * +0x158), centred).
+// The draw selects the game's text shader first, as the game's own text draws do (0x2143b0(2)): a hovered row leaves
+// the highlight shader bound, and text drawn through it shows as a pale box. The previous mode is put back.
 // 0x27080(font) selects a font (the small one is *[0x49a8f0]), 0x27000(text) measures, 0x27180(x, y, text) draws;
 // the menu's title font and the previous current font are put back afterwards (docs/reviews/title-subtitle-review.md).
 static bool subtitleFont=false;
@@ -165,15 +168,18 @@ static void drawSubtitles(uintptr_t obj){
  const auto select=(void(*)(uintptr_t))(base+0x27080);const auto measure=(int(*)(uintptr_t))(base+0x27000);
  const auto draw=(uint64_t(*)(float,float,uintptr_t))(base+0x27180);const auto colour=(void(*)(int,int,int,int))(base+0x1f9ad0);
  const auto blend=(void(*)(unsigned))(base+0x73e90);const auto texture=(void(*)(uintptr_t))(base+0x214310);
- const uintptr_t previous=*(uintptr_t*)(base+0x49a670);bool any=false;
+ const auto shader=(void(*)(int))(base+0x2143b0);if(!readable(base+0x5b21b0,4))return;
+ const uintptr_t previous=*(uintptr_t*)(base+0x49a670);const int previousShader=*(int*)(base+0x5b21b0);bool any=false;
+ y=std::nearbyint(y+row*float(armed.count)+row*0.2f);   // below the last row
  AcquireSRWLockShared(&extrasLock);
  for(int i=0;i<armed.count;++i){const int e=armed.extraIndex[i];
   if(e>=0&&e<maxExtra&&subtitles[e].len>0){
-   if(!any){any=true;blend(0x103);select(font);colour(0xc8,0xc0,0xb0,0xe0);}
-   const uintptr_t s=(uintptr_t)subtitles[e].text;const float w=float(measure(s));draw(std::nearbyint((W-w)*0.5f),y+std::nearbyint(row*0.72f),s);}
-  y=std::nearbyint(y+row);}
+   if(!any){any=true;blend(0x103);shader(2);select(font);colour(0xc8,0xc0,0xb0,0xe0);}
+   const uintptr_t s=(uintptr_t)subtitles[e].text;const float w=float(measure(s));draw(std::nearbyint((W-w)*0.5f),y,s);
+   y=std::nearbyint(y+row*0.55f);}
+ }
  ReleaseSRWLockShared(&extrasLock);
- if(any){*(uintptr_t*)(base+0x49a670)=previous;texture(*(uintptr_t*)(base+0x49a6b0));colour(0xff,0xff,0xff,0xff);blend(0x203);}
+ if(any){*(uintptr_t*)(base+0x49a670)=previous;texture(*(uintptr_t*)(base+0x49a6b0));colour(0xff,0xff,0xff,0xff);shader(previousShader);blend(0x203);}
 }
 static void menuDraw(uintptr_t obj){
  if(titleMenu(obj)){
@@ -265,9 +271,11 @@ static std::string available(bool presentationOwnsDraw){
   const unsigned char measurePrefix2[]={0x31,0xc0,0x48,0x89,0xca,0x48,0x85,0xc9,0x74,0x04,0x48,0x8b};
   const unsigned char colourPrefix[]={0x88,0x0d};const unsigned char blendPrefix[]={0x48,0x8d,0x64,0x24,0xd8,0x89,0x4c,0x24,0x20,0x89,0xc8,0x3b};
   const unsigned char texturePrefix[]={0x53,0x48,0x8d,0x64,0x24,0xe0,0x48,0x89,0xc8,0x48,0x3b,0x05};
+  const unsigned char shaderPrefix[]={0x48,0x8d,0x64,0x24,0xd8,0x89,0xc8,0x3b,0x05};   // 0x2143b0 shader mode
   subtitleFont=gamebridge::operation(base+0x27080,selectPrefix,sizeof selectPrefix)&&gamebridge::operation(base+0x27180,drawPrefix,sizeof drawPrefix)&&
    gamebridge::operation(base+0x27000,measurePrefix2,sizeof measurePrefix2)&&gamebridge::operation(base+0x1f9ad0,colourPrefix,sizeof colourPrefix)&&
-   gamebridge::operation(base+0x73e90,blendPrefix,sizeof blendPrefix)&&gamebridge::operation(base+0x214310,texturePrefix,sizeof texturePrefix);}
+   gamebridge::operation(base+0x73e90,blendPrefix,sizeof blendPrefix)&&gamebridge::operation(base+0x214310,texturePrefix,sizeof texturePrefix)&&
+   gamebridge::operation(base+0x2143b0,shaderPrefix,sizeof shaderPrefix);}
  ready=true;return {};
 }
 }

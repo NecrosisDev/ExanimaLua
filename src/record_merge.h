@@ -157,6 +157,6 @@ static bool edit(const char* name16,std::string& bytes){
 }
 static void deliver(scripting::Host& owner){
  std::vector<std::string> lines;AcquireSRWLockExclusive(&lock);lines.swap(pending);ReleaseSRWLockExclusive(&lock);
- for(const auto& l:lines)owner.report("runtime",l.rfind("merged",0)==0||l.rfind("read,",0)==0?"info":"warn",("[script.records] "+l).c_str());
+ for(const auto& l:lines)owner.report("runtime",l.rfind("merged",0)==0||l.rfind("read,",0)==0||l.find("are already in objstrings")!=std::string::npos?"info":"warn",("[script.records] "+l).c_str());
 }
 }

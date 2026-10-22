@@ -32,3 +32,14 @@ The small font is `*[0x49a8f0]`; 7 of the game's own `0x27080` calls load it wit
 
 - Placement and size are inferred; the second line may touch the next row on small screens.
 - Not observed in game.
+
+## r39d: text shader and placement
+
+Hunter saw a pale box over MANUAL (the Endless records line). The menu draw `0x128f30` opens with shader mode
+`0x2143b0(2)` (the text program) but, for a hovered row, switches to `0x2143b0(0)` plus the highlight program
+`[0x4f02d0]` and leaves it bound; the subtitle glyphs then drew through the highlight program as an opaque quad.
+The game's own small-font draws select their shader mode before drawing (e.g. `0x13afa0` calls `0x2143b0(2)`).
+Now: the current mode `[0x5b21b0]` is read, `0x2143b0(2)` is called before the text (entry bytes checked:
+`48 8d 64 24 d8 89 c8 3b 05`), and the previous mode is passed back afterwards (mode 0 only records itself, as in
+the menu draw). The lines are now drawn centred below the menu's last row, stacked half a row apart, instead of
+0.72 rows under their own row, where they reached into the next row.
