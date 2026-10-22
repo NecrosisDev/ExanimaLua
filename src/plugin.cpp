@@ -182,14 +182,14 @@ static void reloadControl(uint64_t now){
 // What the runtime costs each presented frame (its pulse, the Lua callbacks and tasks inside it, and the console
 // overlay), written to ScriptRuntime.log every 30 s as an average and the worst frame. QueryPerformanceCounter only.
 namespace frametime {
-static LARGE_INTEGER frequency{};static double pulse=0,lua=0,overlay=0,pulseWorst=0,luaWorst=0;static uint64_t frames=0,next=0;
+static LARGE_INTEGER frequency{};static double pulse=0,lua=0,overlay=0,pulseWorst=0,luaWorst=0,deliver=0,effects=0,exports=0;static uint64_t frames=0,next=0;
 static LARGE_INTEGER stamp(){LARGE_INTEGER t;QueryPerformanceCounter(&t);return t;}
 static double since(LARGE_INTEGER a){if(!frequency.QuadPart)QueryPerformanceFrequency(&frequency);const auto b=stamp();return double(b.QuadPart-a.QuadPart)*1000.0/double(frequency.QuadPart);}
 static void publish(uint64_t tick){
  if(!next){next=tick+30000;return;}if(tick<next||!frames)return;
- char line[240];snprintf(line,sizeof line,"Frame cost over %llu frames: pulse %.2f ms average (%.2f worst), of it Lua %.2f ms (%.2f worst); console overlay %.2f ms",
-  (unsigned long long)frames,pulse/double(frames),pulseWorst,lua/double(frames),luaWorst,overlay/double(frames));
- host.report("runtime","info",line);pulse=lua=overlay=pulseWorst=luaWorst=0;frames=0;next=tick+30000;
+ char line[400];snprintf(line,sizeof line,"Frame cost over %llu frames: pulse %.2f ms average (%.2f worst), of it Lua %.2f ms (%.2f worst), events %.2f, effects %.2f, exports %.2f, character scans %.2f (%.1f a frame); console overlay %.2f ms",
+  (unsigned long long)frames,pulse/double(frames),pulseWorst,lua/double(frames),luaWorst,deliver/double(frames),effects/double(frames),exports/double(frames),characterScanMs/double(frames),double(characterScans)/double(frames),overlay/double(frames));
+ host.report("runtime","info",line);pulse=lua=overlay=pulseWorst=luaWorst=deliver=effects=exports=0;characterScanMs=0;characterScans=0;frames=0;next=tick+30000;
  // The addon profiler's files, beside this frame-cost line: profiler/summary.txt (appended) and profiler/report.txt,
  // named so the in-game console (which tails *.log) does not echo them.
  if(scripting::Host::profiling&&!controlDirectory.empty())try{
@@ -224,7 +224,7 @@ static void refresh(bool session){
 }
 }
 static void pumpPresentation(uint64_t thread,uint64_t windowThread,const std::string& phase,uint64_t player,uint64_t now){
- frametime::Pulse timing;frametime::publish(now);
+ frametime::Pulse timing;frametime::publish(now);readcache::newPulse();
  if(!runtimeEnabled||!frameReady||!session.begin(thread,windowThread,phase,player,now))return;
  worldPulse=phase=="session";worldCaptured=false;worldCopy={};
  charactersCaptured=false;charactersCopy={};
@@ -254,12 +254,15 @@ static void pumpPresentation(uint64_t thread,uint64_t windowThread,const std::st
   else if(tabs<0)host.report("runtime","warn","Mod Settings tab unavailable: another mod manages the Settings form and does not host runtime tabs (update ExCamera)");
   reloadControl(now);session.consume();
  }
- combat::deliver(host,captureCharacters());zones::deliver(host,captureCharacters());scriptcommands::deliver(host,worldPulse);gamemessages::deliver(host);
- sharedlua::deliver(host);memberreads::deliver(host);gear::deliver(host);modsettings::deliver(host);sounds::deliver(host);gestures::deliver(host);itemids::deliver(host);recordmerge::deliver(host);npcpowers::deliver(host,captureCharacters());dialogs::deliver();powers::deliver(host);powers::step(host,phase);
+ auto sectionStart=frametime::stamp();
+ combat::deliver(host,captureCharacters);zones::deliver(host,captureCharacters);scriptcommands::deliver(host,worldPulse);gamemessages::deliver(host);
+ sharedlua::deliver(host);memberreads::deliver(host);gear::deliver(host);modsettings::deliver(host);sounds::deliver(host);gestures::deliver(host);itemids::deliver(host);recordmerge::deliver(host);npcpowers::deliver(host,captureCharacters);dialogs::deliver();powers::deliver(host);powers::step(host,phase);
+ frametime::deliver+=frametime::since(sectionStart);sectionStart=frametime::stamp();
  marks::refresh(worldPulse);damagescale::refresh(host,worldPulse);hitsound::pulse(hitSoundPossible?host.hitMaterial():-1,worldPulse);limbs::refresh(host,worldPulse);bodyscale::pulse(host,hitSoundPossible,worldPulse);
  tickBoosts(host,worldPulse&&!boosts.empty()?captureCharacters():nullptr,worldPulse,now);
+ frametime::effects+=frametime::since(sectionStart);
  {const auto start=frametime::stamp();session.tickTimers();const double d=frametime::since(start);frametime::lua+=d;frametime::luaWorst=(std::max)(frametime::luaWorst,d);}
- invexports::pulse(worldPulse,now);worldfires::pulse(host,worldPulse);
+ sectionStart=frametime::stamp();invexports::pulse(worldPulse,now);worldfires::pulse(host,worldPulse);frametime::exports+=frametime::since(sectionStart);
  host.flushSettings();
 }
 #include "presentation.h"
@@ -289,7 +292,7 @@ static bool start(){
  hitSoundPossible=worldPossible&&charactersPossible&&readable(base+0x4f0940,56)&&readable(base+0x4f0830,8);titlerows::formOpen=settingstabs::optionsOpen;scripting::Host::subtitleSetter=titlerows::setSubtitle;modsettings::start(controlDirectory);
  if(nativePossible&&!sounds::possible&&!controlDirectory.empty()){sounds::available(controlDirectory.parent_path().parent_path());if(!sounds::possible)host.report("runtime","warn","ui.sound unavailable: Sound.rpk index or the sound functions did not match");}
  host.setSharedApi({sharedlua::addRow,sharedlua::removeRow,sharedlua::enableRow,sharedlua::serve,sharedlua::clearServed,forgetShared,newgame::arm,sharedlua::readAsset,console::notify,
-  modsettings::defineSettings,modsettings::readSetting,sounds::request,addPlacement,gestures::request,gear::queueWear,npcpowers::request,dialogs::request,sharedlua::readPackage});
+  modsettings::defineSettings,modsettings::readSetting,sounds::request,addPlacement,gestures::request,gear::queueWear,npcpowers::request,dialogs::request,sharedlua::readPackage,worldfires::readFires});
  if(nativePossible&&!gestures::possible)gestures::available();
  if(nativePossible&&!dialogs::possible)dialogs::available();
  if(nativePossible&&!npcpowers::possible)npcpowers::available();
@@ -335,6 +338,7 @@ static bool start(){
  if(worldemitters::extinguishPossible)worldemitters::remove=(worldemitters::Remove)(base+0x5bed0);
  if(worldemitters::torchPossible){worldemitters::torch=(worldemitters::Torch)(base+0x149740);worldemitters::publish=(worldemitters::Publish)(base+0x5a420);worldemitters::pose=(worldemitters::Pose)(base+0x50eb0);}
  if(worldemitters::possible||worldemitters::firePossible||worldemitters::extinguishPossible||worldemitters::torchPossible)worldemitters::enqueue=(worldemitters::Queue)(base+0x1a890);
+ if(worldemitters::firePossible)worldfires::availableAttach();   // effects.attach_fire
  if(frameReady&&nativePossible&&worldPossible)powers::available();
  host.setCasterRead(powers::readCaster);
  worldMutationReady=worldMutationsIdle;
@@ -462,8 +466,12 @@ extern "C" __declspec(dllexport) bool settings_tabs_ready(){return settingstabs:
 extern "C" __declspec(dllexport) bool settings_tabs_claim_host(){return settingstabs::claimHost();}
 extern "C" __declspec(dllexport) int settings_tab_host_open(){return settingstabs::hostedOpen();}
 extern "C" __declspec(dllexport) int settings_tab_host_title(int tab,wchar_t* out,int capacity){return settingstabs::hostedTitle(tab,out,capacity);}
-extern "C" __declspec(dllexport) int settings_tab_host_rows(int tab,int page,settingstabs::Row* out,int capacity){return settingstabs::hostedRows(tab,page,out,capacity);}
-extern "C" __declspec(dllexport) void settings_tab_host_change(int tab,int page,int id,int kind,int delta,float position,int checked,int key){settingstabs::hostedChange(tab,page,id,kind,delta,position,checked,key);}
+// The host calls these from inside the game's Settings window update: a fault here must never reach the game's
+// GUI loop (it would halt that window's task: "Task fatal error").
+static int hostRowsGuarded(int tab,int page,settingstabs::Row* out,int capacity){__try{return settingstabs::hostedRows(tab,page,out,capacity);}__except(EXCEPTION_EXECUTE_HANDLER){return 0;}}
+static void hostChangeGuarded(int tab,int page,int id,int kind,int delta,float position,int checked,int key){__try{settingstabs::hostedChange(tab,page,id,kind,delta,position,checked,key);}__except(EXCEPTION_EXECUTE_HANDLER){}}
+extern "C" __declspec(dllexport) int settings_tab_host_rows(int tab,int page,settingstabs::Row* out,int capacity){return hostRowsGuarded(tab,page,out,capacity);}
+extern "C" __declspec(dllexport) void settings_tab_host_change(int tab,int page,int id,int kind,int delta,float position,int checked,int key){hostChangeGuarded(tab,page,id,kind,delta,position,checked,key);}
 extern "C" __declspec(dllexport) uint32_t character_marks_version(){return 1;}
 // Weapon hits on character parts (combat_bridge.h recordHit), oldest first, with serial > `after`.
 extern "C" __declspec(dllexport) uint32_t character_hits_version(){return 2;}
@@ -493,4 +501,8 @@ extern "C" __declspec(dllexport) int inventory_list(invexports::ItemV1* out,int 
 extern "C" __declspec(dllexport) uint32_t inventory_drop_row(uint64_t ticket,uint32_t row,const float position[3]){return invexports::drop(ticket,row,position);}
 extern "C" __declspec(dllexport) uint32_t inventory_pickup_node(uintptr_t node){return invexports::pickup(node);}
 extern "C" __declspec(dllexport) int inventory_request_state(uint32_t request,uintptr_t* node){return invexports::state(request,node);}
+// Fires near the player for other mods' threads (world_fire_bridge.h): scene nodes and sizes, nearest first, from the
+// last scan (about six a second). Any thread; no lock, no game memory read, no allocation.
+extern "C" __declspec(dllexport) uint32_t fire_nodes_version(){return 1;}
+extern "C" __declspec(dllexport) int fire_nodes(uintptr_t* nodes,float* sizes,int capacity){return worldfires::exportNodes(nodes,sizes,capacity);}
 BOOL WINAPI DllMain(HINSTANCE h,DWORD why,LPVOID){if(why==DLL_PROCESS_ATTACH){module=h;DisableThreadLibraryCalls(h);}return TRUE;}

@@ -16,6 +16,7 @@ struct Character {
  float health=NAN,balance=NAN,maximum=NAN,stamina=NAN,staminaMax=NAN,focus=NAN,focusMax=NAN;
  Awareness awareness;
  bool skillsKnown=false,rolesKnown=false;std::vector<Skill> skills;std::vector<Role> roles;
+ uint32_t held[2]{};bool heldLit[2]{};   // the record ID in each hand (0 right, 1 left; 0 empty) and whether a fire burns on it
  bool stageKnown=false;uint32_t lifeStage=0;
 };
 constexpr uintptr_t lifeStageAt=0x11a4;
@@ -42,6 +43,19 @@ template<class Memory>void readDetails(const Memory& memory,uintptr_t base,uintp
   c.roles.push_back(std::move(role));entry+=npc::off::roleVars+4*uintptr_t(vars);
  }
  c.rolesKnown=true;
+}
+// What hand h (0 right, 1 left) holds (ExCamera's reviewed contract: heldItems written at 0x155c51 by the attach
+// 0x155c00): item = character +0xe88 + 8h, its node +0x18; the item's owner +0x580 is the character and the node's
+// body +0x160 is the item. Lit: a child of that node whose body is the fire class (0x30e9e8), as a torch's flame
+// (0x149740 parents it there). Fire class at base +0x30e9e8.
+inline bool heldItem(const CharacterMemory& memory,uintptr_t base,uintptr_t character,int h,uintptr_t& node,uint32_t& record,bool& lit){
+ uintptr_t item=0,owner=0,back=0;node=0;record=0;lit=false;
+ if(!memory.get(character+0xe88+uintptr_t(h)*8,item)||!item||!memory.get(item+0x580,owner)||owner!=character||!memory.get(item+0x18,node)||!node||
+    !memory.get(node+0x160,back)||back!=item||!memory.get(node+0x180,record)){node=0;record=0;return false;}
+ int last=-1;uintptr_t list=0;
+ if(memory.get(node+0x118,last)&&last>=0&&last<64&&memory.get(node+0x120,list))for(int i=0;i<=last;++i){uintptr_t child=0,body=0;
+  if(memory.get(list+uintptr_t(i)*8,child)&&child&&memory.get(child+0x160,body)&&body&&classMatches(body,base+0x30e9e8,memory.read)){lit=true;break;}}
+ return true;
 }
 inline CharacterSnapshot readCharacters(uintptr_t base,WorldRead read,bool includeAwareness=false,bool includeDetails=false){
  CharacterSnapshot out;CharacterMemory memory{read};uintptr_t world=0,list=0;int32_t count=0;
@@ -71,6 +85,7 @@ inline CharacterSnapshot readCharacters(uintptr_t base,WorldRead read,bool inclu
   character.stateKnown=character.stageKnown||actionKnown;
   if(character.stageKnown){character.dead=stage==4;character.down=stage==1||stage==2||stage==3;}
   else{character.dead=action==npc::actionDeadBits;character.down=!character.dead&&(action&npc::actionDownBit)!=0;}
+  for(int h=0;h<2;++h){uintptr_t node=0;heldItem(memory,base,pointer,h,node,character.held[h],character.heldLit[h]);}
   character.poolKnown=memory.get(pointer+npc::off::bodyFlags,flags);character.healthPool=(flags&npc::noHealthPool)==0;
   if(!character.poolKnown||!character.healthPool)character.health=NAN;
   if(includeAwareness)character.awareness=readAwareness(memory,base,pointer,playerKnown?player:0);

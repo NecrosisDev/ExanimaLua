@@ -52,9 +52,11 @@ static unsigned char run(void*){
  job.busy=false;return 0;
 }
 // Each pulse: the first waiting grant whose character is in this pulse's snapshot goes to the game thread.
-static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot* snapshot){
+static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot*(*roster)()){
  static unsigned toldRefused=0;if(refused!=toldRefused){toldRefused=refused;owner.report("runtime","warn","characters.grant_powers refused: the character is gone, is the player, or shares its stats with its spawner");}
- if(!possible||job.busy.load()||!snapshot||!snapshot->ready||!gamebridge::backupDone)return;
+ if(!possible||job.busy.load()||!gamebridge::backupDone)return;
+ {std::lock_guard<std::mutex> l(lock);if(wanted.empty())return;}
+ const auto snapshot=roster();if(!snapshot||!snapshot->ready)return;
  std::lock_guard<std::mutex> l(lock);
  for(auto it=wanted.begin();it!=wanted.end();++it){
   for(const auto& c:snapshot->characters)if(c.record==it->record&&c.nativeCharacter&&!(c.player&&c.playerKnown)){
@@ -62,4 +64,7 @@ static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot* s
    if(!nativecalls::enqueue(run)){job.busy=false;++refused;}return;}
  }
 }
+// A snapshot already in hand (tests).
+static const scripting::CharacterSnapshot* givenSnapshot=nullptr;static const scripting::CharacterSnapshot* given(){return givenSnapshot;}
+static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot* snapshot){givenSnapshot=snapshot;deliver(owner,given);}
 }

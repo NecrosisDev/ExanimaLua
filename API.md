@@ -126,6 +126,7 @@ mean" hint; in `optional` it is logged and ignored.
 | `world.teleporters` | `teleporter:use()` opens the destination screen | write | 0.19.0 |
 | `world.devices` | scanners, electrical emitters (`set_active`), fires and static torches (`use`, `ignite`, `extinguish`) | write | 0.19.0 |
 | `world.fire` | `world.light_fire`, `world.put_out_fire` (another name for `world.devices`: either grants both) | write | 0.28.0 |
+| `effects.fire` | `effects.attach_fire`, `effects.remove_fire` (another name for `effects.arc`: either grants both) | write | 0.28.0 |
 | `events.combat` | `events.on("character.hit", fn)` | event | 0.23.0 |
 | `events.script` | `events.on("script.event", fn)` for `LuaEvent(...)` | event | 0.23.0 |
 | `script.flags` | `script_flags.get/set` for `LuaFlag(...)` | core | 0.23.0 |
@@ -176,6 +177,9 @@ mean" hint; in `optional` it is logged and ignored.
 | `tasks.count()` | integer | this addon's unfinished tasks |
 | `world.light_fire(name, {position = {x, y, z}, size = s})` | true | from timer and event callbacks: stages the game's own fire on the placed object nearest `position` (within 60 cm, the player's sector, scene cm as `world.nearby`); `size` 0.25..2 (1 medium); refused later (logged) when a fire already burns within 50 cm; `name` (1..31 bytes) is this addon's handle; 24 lit at most; not kept by saves (0.28.0) |
 | `world.put_out_fire(name)` | true | stages removal of this addon's fire `name` through the game's own removal (0.28.0) |
+| `world.fires([radius])` | list | with `world.read`: the game's fires and attached flames within `radius` cm (0..5000, default 1000) of the player, nearest first, at most 64: `{position = {x, y, z}, size, mod}` (`mod` for fires and flames addons made); refreshed about six times a second (0.28.0) |
+| `effects.attach_fire(name, target, {size = s})` | true | from callbacks (`effects.fire`, another name for `effects.arc`): the game's small fire following `target` (`"player"` or a row with a `handle`) until removed or the level ends; `size` 0.1..1 (default 0.5); 16 per addon; not saved, never a damage source; weapon targets are not supported yet (0.28.0) |
+| `effects.remove_fire(name)` | true | removes this addon's attached flame `name` (0.28.0) |
 | `profile.begin(name)`, `profile.finish(name)` | boolean | a timed scope (name 1..48 bytes, up to 16 open) that appears in the runtime profiler's log as `scope name`; false while the profiler is off (0.28.0) |
 | `profile.scope(name, fn, ...)` | fn's results | runs `fn(...)` and records its time as `scope name` (0.28.0) |
 | `addons.send(target, topic, value)` | boolean | a message to another addon (its ID, or `"*"` for all others): `value` is nil, a boolean, number, string or a table of those (at most 6 deep, 16 KiB) and is copied; delivered at the next pulse; false when no receiver took it (at most 32 waiting each) (0.28.0) |

@@ -47,3 +47,22 @@ Evidence: the existing reviewed fire paths in this source (`gear.use` ignite_tar
   path separator or a colon), parses the .rpk index (magic `01 0c bf af`, 32-byte rows) and returns one uncompressed
   member, 8 MiB at most. No game memory, no hook. Checked against the installed Resource.rpk (pwr_energy.pwr row:
   offset 0x19968084, size 0x92f, type 0; data at 8 + table length + offset).
+
+## effects.attach_fire, world.fires, fire_nodes (r45)
+
+Evidence: Ghidra decompile of `0xf2a70` (the factory: builds the small fire from preset `0x2b5a70` via `0xf1920`,
+tags the controller `+0x158 = 0x3dd0e002`, writes the size at controller `+0x12c`/`+0x118`, builds a light node
+and parents it with `0x50170`, returns the fire unattached), `0x149740` (a torch: `0x50170(node, fire)`) and
+`0x1494d0` (a placed fire: parent to the world, `0x50eb0`, `0x5c030` to the node's sector, `0x5a420`).
+
+- Attach (a ring job): `fire = 0xf2a70(zero offset, size 0.1..1, world)`; controller `+0x158` cleared so `0xf2ed0`
+  never rebuilds it after a load; node `+8 |= 0x9000` as both game callers do; `0x50170(target node, fire)`;
+  `0x5c030(fire, target sector)` when its sector differs (entry `53 57 56 41 54 48 8d a4 24 c8 fe ff ff`);
+  `0x50eb0`; `0x5a420(world, &fire, 0)`. The target is the player's or a live roster character's scene node
+  (character `+0x18`), checked in the same world before the job and again inside it.
+- Remove (a ring job): `0x50a60(fire, 1)` only while the fire's parent (`+0x128`) is still that target node; a level
+  change forgets them (they go with the scene).
+- Scan (every 10 pulses, guarded reads only): the player's sector's fire nodes with tag `0x3dd0e002` and the attached
+  flames, size from controller `+0x12c`, sorted by distance; published as a seqlock table of 64 for the
+  `fire_nodes` export and kept for `world.fires`.
+- Weapon targets are refused: the held-weapon scene node is not traced yet.

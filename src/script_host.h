@@ -50,7 +50,7 @@ inline constexpr CapabilityName capabilityNames[]={
  {"items.stats",itemStats},{"events.zone",zoneEvents},{"events.messages",gameMessages},{"title.rows",titleRows},{"levels.serve",levelsServe},{"levels.read",levelsServe},
  {"player.damage",playerDamage},{"player.push",playerPush},{"levels.drive",levelsDrive},
  {"powers.cast",powerCast},{"powers.focus",focusHold},{"world.lights",worldLights},{"events.gear_use",gearUse},{"items.condition",itemsCondition},
- {"levels.flow",levelsFlow},{"assets.read",assetsRead},{"player.place",playerPlace},{"ui.notify",uiNotify},{"ui.settings",modSettings},{"ui.sound",uiSound},{"items.wear",itemsWear},{"characters.powers",characterPowers},{"characters.damage",charactersDamage},{"characters.marks",characterMarks},{"characters.damage_scale",damageScale},{"characters.hit_sound",hitSound},{"characters.limb_strength",limbStrength},{"characters.body",bodyScale},{"effects.arc",effectsArc}};
+ {"levels.flow",levelsFlow},{"assets.read",assetsRead},{"player.place",playerPlace},{"ui.notify",uiNotify},{"ui.settings",modSettings},{"ui.sound",uiSound},{"items.wear",itemsWear},{"characters.powers",characterPowers},{"characters.damage",charactersDamage},{"characters.marks",characterMarks},{"characters.damage_scale",damageScale},{"characters.hit_sound",hitSound},{"characters.limb_strength",limbStrength},{"characters.body",bodyScale},{"effects.arc",effectsArc},{"effects.fire",effectsArc}};
 inline uint64_t capability(const std::string& name){
  for(const auto& known:capabilityNames)if(name==known.name)return known.bit;
  return 0;
@@ -82,7 +82,8 @@ struct Result { bool handled=false;Action action=Action::none;bool restore=false
 
 struct Module { std::string name,source; };
 // world.light_fire / world.put_out_fire, staged by an addon and run by the runtime (world_fire_bridge.h).
-struct FireOrder { std::string owner,name;bool light=false;std::array<float,3> at{};float size=1; };
+struct FireOrder { std::string owner,name;int kind=0;std::array<float,3> at{};float size=1;uint64_t handle=0;int hand=-1; };   // kind: 0 light, 1 put out, 2 attach, 3 detach
+struct FireInfo { std::array<float,3> at{};float size=0,distance=0;bool mod=false; };
 // tasks.worker: one job for a runtime worker thread. Everything the thread touches is in here (copied in at start);
 // the result is read by the main thread only after `state` says it is finished.
 struct WorkerJob {
@@ -94,6 +95,7 @@ struct CombatHit {
  uint32_t record=0;std::string name;bool player=false,downed=false;float health=0,balance=0;
  std::string source;bool attacker=false,attackerPlayer=false;uint32_t attackerRecord=0;std::string attackerName;
  uint32_t weapon=0;int part=-1;uint64_t handle=0,attackerHandle=0;   // live-character handles (targets)
+ bool weaponLit=false;   // a fire burns on the attacking weapon (a lit torch)
  bool blocked=false,parried=false;uint32_t shield=0,parryWeapon=0;   // the blow met the victim's shield or weapon
  uint32_t armour=0;   // the player's outermost worn piece covering the struck part
 };
@@ -195,6 +197,7 @@ public:
   bool(*grantPowers)(uint32_t record,const std::vector<uint32_t>& ids)=nullptr;
   bool(*dialog)(const std::string& title,const std::string& text)=nullptr;
   bool(*readPackage)(const std::string& package,const std::string& member,std::string& out,std::string& why)=nullptr;
+  bool(*fires)(std::vector<FireInfo>& out)=nullptr;
  };
 private:
  // What a subscription listens to; item-use handlers also carry the model name they match.
@@ -662,7 +665,7 @@ private:
   if(!a->timerRunning||a->loading)return luaL_error(L,"world.%s is only allowed in timer and event callbacks",light?"light_fire":"put_out_fire");
   size_t n=0;const char* name=luaL_checklstring(L,1,&n);if(!n||n>31||std::memchr(name,0,n))return luaL_error(L,"fire name must be 1..31 bytes");
   if(a->fireOrders.size()>=4)return luaL_error(L,"at most 4 fire orders a callback");
-  FireOrder o;o.owner=a->id;o.name.assign(name,n);o.light=light;
+  FireOrder o;o.owner=a->id;o.name.assign(name,n);o.kind=light?0:1;
   if(light){luaL_checktype(L,2,LUA_TTABLE);lua_getfield(L,2,"position");if(!lua_istable(L,-1))return luaL_error(L,"light_fire needs position = {x, y, z}");
    for(int i=0;i<3;++i){lua_rawgeti(L,-1,i+1);if(!lua_isnumber(L,-1))return luaL_error(L,"light_fire position needs three numbers");const double v=lua_tonumber(L,-1);
     if(!std::isfinite(v)||std::abs(v)>10000000)return luaL_error(L,"light_fire position outside supported range");o.at[size_t(i)]=float(v);lua_pop(L,1);}
@@ -670,6 +673,37 @@ private:
   a->fireOrders.push_back(o);lua_pushboolean(L,1);return 1;
  }
  static int lightFire(lua_State* L){return fireOrder(L,true);}
+ // effects.attach_fire(name, target, {size = s}) / effects.remove_fire(name): the game's small fire following
+ // `target` ("player", or a row with a handle) until removed or the level ends; size 0.1..1; 16 per addon; not saved,
+ // never a damage source (effects.fire, an alias of effects.arc). "weapon:right"/"weapon:left": the item in that hand.
+ static int attachFire(lua_State* L,bool attach){
+  auto a=context(L);if(!(a->caps&effectsArc)||!(a->owner->available&effectsArc))return luaL_error(L,"effects.%s needs the effects.fire capability",attach?"attach_fire":"remove_fire");
+  if(!a->timerRunning||a->loading)return luaL_error(L,"effects.%s is only allowed in timer and event callbacks",attach?"attach_fire":"remove_fire");
+  size_t n=0;const char* name=luaL_checklstring(L,1,&n);if(!n||n>31||std::memchr(name,0,n))return luaL_error(L,"fire name must be 1..31 bytes");
+  if(a->fireOrders.size()>=4)return luaL_error(L,"at most 4 fire orders a callback");
+  FireOrder o;o.owner=a->id;o.name.assign(name,n);o.kind=attach?2:3;
+  if(attach){
+   if(lua_type(L,2)==LUA_TSTRING){const char* t=lua_tostring(L,2);
+    if(!std::strcmp(t,"weapon:right"))o.hand=0;else if(!std::strcmp(t,"weapon:left"))o.hand=1;
+    else if(std::strcmp(t,"player"))return luaL_error(L,"attach_fire target is \"player\", \"weapon:right\", \"weapon:left\" or a row with a handle");}
+   else{luaL_checktype(L,2,LUA_TTABLE);lua_getfield(L,2,"handle");if(!lua_isinteger(L,-1)||lua_tointeger(L,-1)<=0)return luaL_error(L,"attach_fire: the row has no handle");o.handle=uint64_t(lua_tointeger(L,-1));lua_pop(L,1);}
+   o.size=0.5f;if(lua_istable(L,3)){lua_getfield(L,3,"size");if(!lua_isnil(L,-1)){const double s=luaL_checknumber(L,-1);if(!std::isfinite(s)||s<0.1||s>1)return luaL_error(L,"attach_fire size is 0.1..1");o.size=float(s);}lua_pop(L,1);}
+  }
+  a->fireOrders.push_back(o);lua_pushboolean(L,1);return 1;
+ }
+ static int attachFireLua(lua_State* L){return attachFire(L,true);}
+ static int removeFireLua(lua_State* L){return attachFire(L,false);}
+ // world.fires(radius): the game's fires (and attached flames) near the player, nearest first, at most 64:
+ // {position = {x, y, z}, size, mod}; refreshed about six times a second (world.read).
+ static int listFires(lua_State* L){
+  auto a=context(L);if(!(a->caps&worldRead)||!(a->owner->available&worldRead))return luaL_error(L,"world.fires needs world.read");
+  const double radius=luaL_optnumber(L,1,1000);if(!std::isfinite(radius)||radius<0||radius>5000)return luaL_error(L,"world.fires radius is 0..5000");
+  std::vector<FireInfo> list;if(!a->owner->shared.fires||!a->owner->shared.fires(list)){lua_newtable(L);return 1;}
+  lua_newtable(L);int i=0;for(const auto& f:list){if(f.distance<0||f.distance>radius)continue;lua_newtable(L);lua_newtable(L);
+   for(int k=0;k<3;++k){lua_pushnumber(L,f.at[size_t(k)]);lua_rawseti(L,-2,k+1);}lua_setfield(L,-2,"position");
+   lua_pushnumber(L,f.size);lua_setfield(L,-2,"size");lua_pushboolean(L,f.mod);lua_setfield(L,-2,"mod");lua_rawseti(L,-2,++i);if(i>=64)break;}
+  return 1;
+ }
  static int putOutFire(lua_State* L){return fireOrder(L,false);}
  static int setMark(lua_State* L){
   auto a=context(L);if(!(a->caps&characterMarks)||!(a->owner->available&characterMarks))return luaL_error(L,"characters.marks unavailable");
@@ -824,6 +858,8 @@ private:
    }
    if((a->caps&charactersDamage)&&(a->owner->available&charactersDamage)&&a->timerRunning&&character.nativeCharacter&&!(character.playerKnown&&character.player)){
     lua_pushinteger(L,lua_Integer(character.nativeCharacter));lua_pushinteger(L,lua_Integer(a->execution));lua_pushcclosure(L,damageCharacter,2);lua_setfield(L,-2,"damage");}
+   if(character.held[0]||character.held[1]){lua_newtable(L);if(character.held[0])number(L,"right",character.held[0]);if(character.held[1])number(L,"left",character.held[1]);lua_setfield(L,-2,"held");
+    lua_newtable(L);boolean(L,"right",character.heldLit[0]);boolean(L,"left",character.heldLit[1]);lua_setfield(L,-2,"held_lit");}
    if(character.stateKnown){boolean(L,"dead",character.dead);boolean(L,"down",character.down);}
    if(character.stageKnown)number(L,"life_stage",character.lifeStage);
    if(character.poolKnown)boolean(L,"has_health_pool",character.healthPool);
@@ -1610,7 +1646,7 @@ private:
   lua_newtable(L);lua_pushcfunction(L,getSetting);lua_setfield(L,-2,"get");lua_pushcfunction(L,setSetting);lua_setfield(L,-2,"set");lua_pushcfunction(L,settingsStatus);lua_setfield(L,-2,"status");lua_setglobal(L,"storage");
   lua_newtable(L);lua_pushcfunction(L,snapshotWorld);lua_setfield(L,-2,"snapshot");
   lua_pushcfunction(L,readTime);lua_setfield(L,-2,"time");lua_pushcfunction(L,writeTime);lua_setfield(L,-2,"set_time");
-  lua_pushcfunction(L,readLevel);lua_setfield(L,-2,"level");lua_pushcfunction(L,readNearbyObjects);lua_setfield(L,-2,"nearby");lua_pushcfunction(L,lightFire);lua_setfield(L,-2,"light_fire");lua_pushcfunction(L,putOutFire);lua_setfield(L,-2,"put_out_fire");lua_setglobal(L,"world");
+  lua_pushcfunction(L,readLevel);lua_setfield(L,-2,"level");lua_pushcfunction(L,readNearbyObjects);lua_setfield(L,-2,"nearby");lua_pushcfunction(L,lightFire);lua_setfield(L,-2,"light_fire");lua_pushcfunction(L,putOutFire);lua_setfield(L,-2,"put_out_fire");lua_pushcfunction(L,listFires);lua_setfield(L,-2,"fires");lua_setglobal(L,"world");
   lua_newtable(L);lua_pushcfunction(L,readItemStats);lua_setfield(L,-2,"stats");lua_pushcfunction(L,addWear);lua_setfield(L,-2,"add_wear");lua_setglobal(L,"items");
   lua_newtable(L);lua_pushcfunction(L,addTitleRow);lua_setfield(L,-2,"add_row");lua_pushcfunction(L,removeTitleRow);lua_setfield(L,-2,"remove_row");
   lua_pushcfunction(L,enableTitleRow);lua_setfield(L,-2,"set_enabled");lua_pushcfunction(L,setTitleSubtitle);lua_setfield(L,-2,"set_subtitle");lua_setglobal(L,"title");
@@ -1625,7 +1661,7 @@ private:
   lua_newtable(L);lua_pushcfunction(L,snapshotInventory);lua_setfield(L,-2,"snapshot");lua_setglobal(L,"inventory");
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"snapshot");
   lua_pushboolean(L,1);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"awareness");lua_pushcfunction(L,grantPowers);lua_setfield(L,-2,"grant_powers");lua_pushcfunction(L,setMark);lua_setfield(L,-2,"set_mark");lua_pushcfunction(L,setDamageScale);lua_setfield(L,-2,"set_damage_scale");lua_pushcfunction(L,setHitSound);lua_setfield(L,-2,"set_hit_sound");lua_pushcfunction(L,setLimbStrength);lua_setfield(L,-2,"set_limb_strength");lua_pushboolean(L,1);lua_pushcclosure(L,setBodyScale,1);lua_setfield(L,-2,"set_strength");lua_pushboolean(L,0);lua_pushcclosure(L,setBodyScale,1);lua_setfield(L,-2,"set_anim_rate");lua_setglobal(L,"characters");
-  lua_newtable(L);lua_pushcfunction(L,spawnArc);lua_setfield(L,-2,"spawn_arc");lua_setglobal(L,"effects");
+  lua_newtable(L);lua_pushcfunction(L,spawnArc);lua_setfield(L,-2,"spawn_arc");lua_pushcfunction(L,attachFireLua);lua_setfield(L,-2,"attach_fire");lua_pushcfunction(L,removeFireLua);lua_setfield(L,-2,"remove_fire");lua_setglobal(L,"effects");
   lua_newtable(L);lua_pushcfunction(L,profileBegin);lua_setfield(L,-2,"begin");lua_pushcfunction(L,profileFinish);lua_setfield(L,-2,"finish");lua_pushcfunction(L,profileScope);lua_setfield(L,-2,"scope");lua_setglobal(L,"profile");
   lua_newtable(L);lua_pushcfunction(L,sendMessage);lua_setfield(L,-2,"send");lua_pushcfunction(L,onMessage);lua_setfield(L,-2,"on");lua_setglobal(L,"addons");
   lua_newtable(L);lua_pushcfunction(L,holdFocus);lua_setfield(L,-2,"hold_focus");lua_pushcfunction(L,spendFocus);lua_setfield(L,-2,"spend_focus");lua_pushcfunction(L,restoreFocus);lua_setfield(L,-2,"restore_focus");lua_pushcfunction(L,teachPower);lua_setfield(L,-2,"teach");lua_pushcfunction(L,openSchool);lua_setfield(L,-2,"open_school");lua_pushcfunction(L,wheelReaction);lua_setfield(L,-2,"wheel");lua_pushcfunction(L,heldFocus);lua_setfield(L,-2,"held_focus");
@@ -1768,7 +1804,7 @@ private:
   lua_pushboolean(L,hit.downed);lua_setfield(L,-2,"downed");
   if(!hit.source.empty())text(L,"source",hit.source.c_str());
   if(hit.attacker){lua_newtable(L);number(L,"record_id",hit.attackerRecord);text(L,"name",hit.attackerName.c_str());lua_pushboolean(L,hit.attackerPlayer);lua_setfield(L,-2,"is_player");lua_setfield(L,-2,"attacker");}
-  if(hit.weapon)number(L,"weapon_id",hit.weapon);
+  if(hit.weapon){number(L,"weapon_id",hit.weapon);boolean(L,"weapon_lit",hit.weaponLit);}
   if(hit.part>=0&&hit.part<18){number(L,"part",hit.part+1);text(L,"part_name",bodyParts[hit.part]);}
   boolean(L,"blocked",hit.blocked);boolean(L,"parried",hit.parried);
   if(hit.shield)number(L,"shield_id",hit.shield);if(hit.armour)number(L,"armour_id",hit.armour);if(hit.parryWeapon)number(L,"parry_weapon_id",hit.parryWeapon);
@@ -2032,7 +2068,7 @@ public:
  void collectMarks(std::vector<Mark>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&characterMarks)&&(available&characterMarks))out.insert(out.end(),a->marks.begin(),a->marks.end());}
  void collectDamageScales(std::vector<DamageScale>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&damageScale)&&(available&damageScale))out.insert(out.end(),a->scales.begin(),a->scales.end());}
  void collectLimbs(std::vector<LimbStrength>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&limbStrength)&&(available&limbStrength))out.insert(out.end(),a->limbs.begin(),a->limbs.end());}
- void collectFires(std::vector<FireOrder>& out){out.clear();for(auto& a:addons){if(a->enabled&&(a->caps&worldDevices)&&(available&worldDevices))out.insert(out.end(),a->fireOrders.begin(),a->fireOrders.end());a->fireOrders.clear();}}
+ void collectFires(std::vector<FireOrder>& out){out.clear();for(auto& a:addons){if(a->enabled)out.insert(out.end(),a->fireOrders.begin(),a->fireOrders.end());a->fireOrders.clear();}}
  void collectBody(std::vector<BodyScale>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&bodyScale)&&(available&bodyScale))out.insert(out.end(),a->body.begin(),a->body.end());}
  bool arcsWanted()const{for(const auto& a:addons)if(!a->arcs.empty())return true;return false;}
  bool takeArc(std::array<float,4>& out){for(auto& a:addons){if(a->arcs.empty())continue;const bool ok=a->enabled&&(a->caps&effectsArc)&&(available&effectsArc);out=a->arcs.front();a->arcs.erase(a->arcs.begin());if(ok)return true;}return false;}

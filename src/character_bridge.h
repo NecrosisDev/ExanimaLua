@@ -30,9 +30,12 @@ static bool charactersContract(){
  }
  return false;
 }
+// The character scan's own cost, for the frame-cost line.
+static double characterScanMs=0;static uint64_t characterScans=0;
 static const scripting::CharacterSnapshot* captureCharacters(){
  if(!charactersPossible||!worldPulse)return nullptr;
- if(!charactersCaptured){charactersCaptured=true;charactersCopy=scripting::readCharacters(base,copyWorldMemory);}
+ if(!charactersCaptured){charactersCaptured=true;LARGE_INTEGER a,b,f;QueryPerformanceCounter(&a);charactersCopy=scripting::readCharacters(base,copyWorldMemory);
+  QueryPerformanceCounter(&b);QueryPerformanceFrequency(&f);characterScanMs+=double(b.QuadPart-a.QuadPart)*1000.0/double(f.QuadPart);++characterScans;}
  return &charactersCopy;
 }
 static const scripting::CharacterSnapshot* captureAwareness(){

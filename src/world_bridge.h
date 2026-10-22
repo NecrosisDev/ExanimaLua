@@ -1,8 +1,26 @@
 #pragma once
 static bool worldPossible=false,worldPulse=false,worldCaptured=false;
 static scripting::WorldSnapshot worldCopy;
+// Guarded copies are the runtime's hot path (every scan of characters and scene nodes): the committed-region check
+// (VirtualQuery, a system call) is cached per thread for one pulse. The copy itself stays under SEH, so a region the
+// game released since its check fails the copy instead of faulting.
+namespace readcache {
+struct Region {uintptr_t lo=0,hi=0;};
+static thread_local Region slots[32];static thread_local unsigned seen=0,nextSlot=0;
+static std::atomic<unsigned> generation{1};
+static void newPulse(){generation.fetch_add(1,std::memory_order_relaxed);}
+static bool check(uintptr_t p,size_t n){
+ if(p<0x10000||p+n<p)return false;
+ const unsigned g=generation.load(std::memory_order_relaxed);
+ if(seen!=g){for(auto& s:slots)s={};seen=g;}
+ for(const auto& s:slots)if(p>=s.lo&&p+n<=s.hi&&s.hi)return true;
+ MEMORY_BASIC_INFORMATION m{};
+ if(VirtualQuery((void*)p,&m,sizeof m)!=sizeof m||m.State!=MEM_COMMIT||(m.Protect&(PAGE_NOACCESS|PAGE_GUARD)))return false;
+ const uintptr_t lo=(uintptr_t)m.BaseAddress,hi=lo+m.RegionSize;slots[nextSlot++%32]={lo,hi};return p+n<=hi;
+}
+}
 static bool copyWorldMemory(uintptr_t address,void* target,size_t size){
- __try{if(!readable(address,size))return false;std::memcpy(target,(void*)address,size);return true;}
+ __try{if(!readcache::check(address,size))return false;std::memcpy(target,(void*)address,size);return true;}
  __except(EXCEPTION_EXECUTE_HANDLER){return false;}
 }
 static bool worldContract(){

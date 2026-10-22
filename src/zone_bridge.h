@@ -73,11 +73,12 @@ static bool install(){
  if(!created){if(!gamebridge::operation(base+0xaa4d0,prefix,sizeof prefix)||MH_CreateHook((void*)(base+0xaa4d0),(void*)entered,(void**)&original)!=MH_OK)return false;created=true;}
  const auto status=MH_EnableHook((void*)(base+0xaa4d0));installed=status==MH_OK||status==MH_ERROR_ENABLED;return installed;
 }
-static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot* snapshot){
+static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot*(*roster)()){
  listening=installed&&owner.handlesZones();
  std::vector<Entry> entries;size_t missed=0;
  AcquireSRWLockExclusive(&lock);entries.assign(queue.begin(),queue.begin()+ptrdiff_t(queued));missed=lost;queued=lost=0;ReleaseSRWLockExclusive(&lock);
- if(!listening||!snapshot||!snapshot->ready)return;
+ if(!listening||(entries.empty()&&!missed))return;
+ const auto snapshot=roster();if(!snapshot||!snapshot->ready)return;
  static uint64_t droppedTotal=0;
  if(missed){const auto before=droppedTotal;droppedTotal+=missed;if(!before||before/1000!=droppedTotal/1000)
   owner.report("runtime","warn",("Zone events dropped (more than 32 in one pulse): "+std::to_string(droppedTotal)+" so far").c_str());}
@@ -86,4 +87,7 @@ static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot* s
   found.push_back({e.zone,c.record,c.name,c.player&&c.playerKnown});break;}
  if(!found.empty())owner.notifyZones(found);
 }
+// A snapshot already in hand (tests).
+static const scripting::CharacterSnapshot* givenSnapshot=nullptr;static const scripting::CharacterSnapshot* given(){return givenSnapshot;}
+static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot* snapshot){givenSnapshot=snapshot;deliver(owner,given);}
 }

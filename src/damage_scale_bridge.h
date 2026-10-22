@@ -50,22 +50,23 @@ static size_t buildStub(unsigned char* p,int site,void* trampoline){
  put({0xff,0x25,0x00,0x00,0x00,0x00});put64(uint64_t(trampoline));
  return n;
 }
+static std::string why;   // why install refused, for the log
 static bool install(){
  if(installed)return true;if(refused)return false;
  static const uintptr_t sites[2]={0x15b0fc,0x15b2be};
  static const unsigned char expect[2][9]={{0xf3,0x0f,0x10,0x45,0x90,0xf3,0x0f,0x59,0x05},{0xf3,0x0f,0x10,0x45,0x84,0xf3,0x0f,0x59,0x05}};
  const unsigned char entry[]={0x55,0x48,0x89,0xe5};   // 0x159a60 still the game's own
  // The game's own entry, or the runtime's own combat-events detour there (combat_bridge.h checked these bytes).
- if(!combat::impactCreated&&!gamebridge::operation(base+0x159a60,entry,sizeof entry)){refused=true;return false;}
- for(int i=0;i<2;++i)if(!gamebridge::operation(base+sites[i],expect[i],sizeof expect[i])){refused=true;return false;}
- auto* memory=(unsigned char*)VirtualAlloc(nullptr,4096,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);if(!memory){refused=true;return false;}
+ if(!combat::impactCreated&&!gamebridge::operation(base+0x159a60,entry,sizeof entry)){refused=true;why="the entry 0x159a60 is not the game's";return false;}
+ for(int i=0;i<2;++i)if(!gamebridge::operation(base+sites[i],expect[i],sizeof expect[i])){refused=true;why=i?"the bytes at 0x15b2be differ":"the bytes at 0x15b0fc differ";return false;}
+ auto* memory=(unsigned char*)VirtualAlloc(nullptr,4096,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);if(!memory){refused=true;why="no stub memory";return false;}
  for(int i=0;i<2;++i){
   stubs[i]=memory+i*256;
-  if(MH_CreateHook((void*)(base+sites[i]),stubs[i],&trampolines[i])!=MH_OK){refused=true;return false;}
+  {const auto s=MH_CreateHook((void*)(base+sites[i]),stubs[i],&trampolines[i]);if(s!=MH_OK){refused=true;why=std::string("MH_CreateHook at a site returned ")+std::to_string(int(s));return false;}}
   buildStub((unsigned char*)stubs[i],i,trampolines[i]);
  }
- DWORD old=0;if(!VirtualProtect(memory,4096,PAGE_EXECUTE_READ,&old)){refused=true;return false;}FlushInstructionCache(GetCurrentProcess(),memory,4096);
- for(int i=0;i<2;++i){const auto s=MH_EnableHook((void*)(base+sites[i]));if(s!=MH_OK&&s!=MH_ERROR_ENABLED){for(int k=0;k<2;++k)MH_DisableHook((void*)(base+sites[k]));refused=true;return false;}}
+ DWORD old=0;if(!VirtualProtect(memory,4096,PAGE_EXECUTE_READ,&old)){refused=true;why="stub protection failed";return false;}FlushInstructionCache(GetCurrentProcess(),memory,4096);
+ for(int i=0;i<2;++i){const auto s=MH_EnableHook((void*)(base+sites[i]));if(s!=MH_OK&&s!=MH_ERROR_ENABLED){for(int k=0;k<2;++k)MH_DisableHook((void*)(base+sites[k]));refused=true;why=std::string("MH_EnableHook returned ")+std::to_string(int(s));return false;}}
  installed=true;return true;
 }
 // Each pulse: resolve the addons' targets against this pulse's roster and publish them.
@@ -73,7 +74,7 @@ static std::vector<scripting::DamageScale> wanted;static bool published=false;
 static void refresh(scripting::Host& owner,bool session){
  owner.collectDamageScales(wanted);const scripting::CharacterSnapshot* roster=(session&&!wanted.empty())?captureCharacters():nullptr;
  // A reader of character_hits also gets cut/crush kinds, which these hooks see.
- if((!wanted.empty()||combat::hitsRead.load())&&!installed&&!refused&&!install())owner.report("runtime","warn","characters.set_damage_scale unavailable: the damage computation did not match or could not be hooked");
+ if((!wanted.empty()||combat::hitsRead.load())&&!installed&&!refused&&!install())owner.report("runtime","warn",("characters.set_damage_scale unavailable: "+why).c_str());
  Entry next[64];LONG n=0;
  if(installed&&session&&roster&&roster->ready)for(const auto& w:wanted)for(const auto& c:roster->characters){
   if(n>=64)break;if(!c.nativeCharacter||(c.stateKnown&&c.dead))continue;

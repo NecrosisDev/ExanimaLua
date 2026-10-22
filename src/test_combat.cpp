@@ -28,7 +28,7 @@ end))","events.combat"));
  assert(combat::applied(0x2000,1.f,2.f,1)==1);assert(combat::applied(0x1000,0.25f,0.5f,1)==0);assert(combat::applied(0x9999,1.f,1.f,0)==0);
  combat::deliver(host,&snapshot);assert(host.enabled("listen"));
  for(int i=0;i<70;++i)combat::applied(0x9999,1.f,1.f,0);combat::deliver(host,&snapshot);assert(host.enabled("listen"));
- combat::applied(0x2000,1.f,1.f,0);combat::deliver(host,nullptr);combat::deliver(host,&snapshot);assert(host.enabled("listen"));
+ combat::applied(0x2000,1.f,1.f,0);combat::deliver(host,(const scripting::CharacterSnapshot*)nullptr);combat::deliver(host,&snapshot);assert(host.enabled("listen"));
  combat::applied(0x2000,1.f,1.f,0);combat::deliver(host,&snapshot);assert(!host.enabled("listen"));
  combat::deliver(host,&snapshot);assert(!combat::listening);
  // With the impact detour, a hit inside a weapon impact names its attacker; any other hit is an impact.

@@ -107,10 +107,12 @@ static const scripting::Character* find(const scripting::CharacterSnapshot& snap
  for(const auto& c:snapshot.characters)if(character&&c.nativeCharacter==character)return &c;return nullptr;
 }
 // Hits on characters missing from this pulse's snapshot (left the level, list truncated) are dropped.
-static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot* snapshot){
+// The roster is read only when hits wait (a character scan is the pulse's largest native cost).
+static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot*(*roster)()){
  listening=installed&&owner.handlesCombat();
  std::vector<Hit> hits;const auto missed=take(hits);
- if(!listening||!snapshot||!snapshot->ready)return;
+ if(!listening||(hits.empty()&&!missed))return;
+ const auto snapshot=roster();if(!snapshot||!snapshot->ready)return;
  if(missed)owner.report("runtime","warn","Combat events dropped: more than 64 hits in one pulse");
  std::vector<scripting::CombatHit> found;
  // The player's held and worn items, read once, to name the holder of a struck item.
@@ -123,6 +125,8 @@ static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot* s
   const scripting::Character* victim=hit.character?find(*snapshot,hit.character):(player&&playerHolds(hit.struck)?player:nullptr);if(!victim)continue;
   scripting::CombatHit event{victim->record,victim->name,victim->player&&victim->playerKnown,hit.downed,hit.health,hit.balance};
   event.handle=uint64_t(victim->nativeCharacter);event.attackerHandle=uint64_t(hit.attacker);
+  if(hit.attacker&&hit.weapon){const scripting::CharacterMemory m{copyWorldMemory};
+   for(int h=0;h<2;++h){uintptr_t node=0;uint32_t record=0;bool lit=false;if(scripting::heldItem(m,base,hit.attacker,h,node,record,lit)&&record==hit.weapon){event.weaponLit=lit;break;}}}
   // A shield (chunk 0x8000) or a weapon (0x4000) of the victim's own took the blow: blocked or parried.
   if(hit.struck&&(!victim->player||playerHolds(hit.struck))){
    if(inventorybridge::chunk(hit.struck,0x8000)){event.blocked=true;event.shield=hit.struck;}
@@ -138,4 +142,7 @@ static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot* s
  }
  if(!found.empty())owner.notifyHits(found);
 }
+// A snapshot already in hand (tests).
+static const scripting::CharacterSnapshot* givenSnapshot=nullptr;static const scripting::CharacterSnapshot* given(){return givenSnapshot;}
+static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot* snapshot){givenSnapshot=snapshot;deliver(owner,given);}
 }

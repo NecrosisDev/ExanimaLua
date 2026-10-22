@@ -1,5 +1,6 @@
 #pragma once
 #include <deque>
+#include <unordered_set>
 // The "Mod Settings" tab of the game's Settings form (settings_tabs.h draws it). One place for every mod's options:
 //  - Lua addons declare rows with settings.define and read them with settings.get / settings.changed;
 //  - native EMTK plugins' config.toml [[setting]] entries (true/false ones are editable; EMTK reads them at
@@ -99,8 +100,12 @@ static bool defineSettings(const std::string& owner,const std::string& title,con
 }
 // ---- the tab ----
 struct Ref {int what=0;size_t section=0,def=0;};   // what: 0 profile, 1 new profile, 2 a setting
-static std::vector<Ref> refs;static std::deque<std::wstring> texts;
-static const wchar_t* keep(std::wstring s){texts.push_back(std::move(s));return texts.back().c_str();}
+static std::vector<Ref> refs;
+// Row texts are interned for the life of the process: a Settings host (ExCamera) may still hold a row's label or
+// value pointer after the next rows() call, so no text it was given is ever freed (distinct texts are bounded by the
+// rows' labels and their values' steps).
+static std::unordered_set<std::wstring> texts;
+static const wchar_t* keep(std::wstring s){return texts.insert(std::move(s)).first->c_str();}
 static std::wstring keyName(int vk){
  if(vk<=0)return L"Unbound";UINT scan=MapVirtualKeyW(UINT(vk),MAPVK_VK_TO_VSC);LONG l=LONG(scan<<16);
  if((vk>=VK_PRIOR&&vk<=VK_HELP)||vk==VK_DIVIDE||vk==VK_NUMLOCK||vk==VK_RCONTROL||vk==VK_RMENU)l|=1<<24;
@@ -108,7 +113,7 @@ static std::wstring keyName(int vk){
 }
 static std::wstring numberText(double v,bool percent=false){wchar_t b[24];if(percent)swprintf(b,24,L"%.4g %%",v*100.0);else swprintf(b,24,L"%.4g",v);return b;}
 static int rows(void*,int page,settingstabs::Row* out,int room){
- std::lock_guard<std::recursive_mutex> g(lock);refs.clear();texts.clear();if(page!=0)return 0;
+ std::lock_guard<std::recursive_mutex> g(lock);refs.clear();if(page!=0)return 0;
  const Values& v=editing?staged:committed;const std::string& profile=editing?stagedProfile:activeProfile;int n=0;
  auto push=[&](settingstabs::Row r,Ref ref){if(n>=room)return;r.id=int(refs.size());refs.push_back(ref);out[n++]=r;};
  settingstabs::Row r;r.kind=0;r.label=L"Profile";push(r,{});refs.back().what=-2;
