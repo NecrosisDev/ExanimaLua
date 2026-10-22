@@ -181,7 +181,7 @@ private:
   Host* owner=nullptr;std::string id,error;lua_State* state=nullptr;
   uint64_t caps=0;size_t bytes=0,limit=8*1024*1024;
   bool loading=true,enabled=true;int instructions=0,storageOps=0,worldOps=0,characterOps=0;
-  bool timerRunning=false;uint64_t execution=0;std::vector<AiChange> aiChanges;int statsReads=0;
+  bool timerRunning=false,taskRunning=false;std::vector<int> tasks;uint64_t execution=0;std::vector<AiChange> aiChanges;int statsReads=0;   // tasks: registry refs of tasks.run coroutines
   std::vector<std::pair<std::string,int>> titleHandlers;std::vector<int> titleAfter,titleActsAs;   // row label -> Lua function reference, anchor, base row it acts as
   std::vector<NativeCall> nativeCalls;
   std::string settingsTitle;std::vector<SettingDef> settingDefs;   // Mod Settings rows, published after a successful load
@@ -194,7 +194,7 @@ private:
   std::vector<Handler> handlers;TimerQueue timers;
   settings::Cache* settingsData=nullptr;std::unique_ptr<settings::Document> staged;
   std::vector<Module> modules;std::vector<bool> importing;int cache=0,logs=0;
-  std::vector<LightSpec> lights;lua_Number focus=0,spend=0;int bindings=0;   // bindings: continuous-power slots this addon holds
+  std::vector<LightSpec> lights;lua_Number focus=0,spend=0;int bindings=0;std::vector<uint32_t> teach;uint32_t schools=0;   // teach: Light powers to make known; schools: open_school bits   // bindings: continuous-power slots this addon holds
   ~Addon(){if(state)lua_close(state);}
  };
  std::vector<std::unique_ptr<Addon>> addons;
@@ -762,6 +762,26 @@ private:
   if(a->owner->phaseName!="session"){lua_pushboolean(L,0);return 1;}
   a->spend=(std::min)(a->spend+value,lua_Number(0.5));lua_pushboolean(L,1);return 1;
  }
+ // powers.teach(power): the controlled character comes to know a Light-school power (id & 0xff00 == 0x500), so the
+ // spell book's Light page opens. Staged for the game thread; a power already known is left as it is (its
+ // learning progress is never reset). True when staged; false outside a session.
+ static int teachPower(lua_State* L){
+  auto a=context(L);if(!(a->caps&powerCast)||!(a->owner->available&powerCast))return luaL_error(L,"powers.cast unavailable");
+  if(a->loading)return luaL_error(L,"powers.teach is not available while the addon loads; call it from a timer or event");
+  const lua_Integer power=luaL_checkinteger(L,1);
+  if(power<=0||power>0x3ffff||(power&0xff00)!=0x500)return luaL_error(L,"powers.teach takes a Light-school power id (0x..05..)");
+  if(a->owner->phaseName!="session"){lua_pushboolean(L,0);return 1;}
+  if(a->teach.size()<8&&std::find(a->teach.begin(),a->teach.end(),uint32_t(power))==a->teach.end())a->teach.push_back(uint32_t(power));
+  lua_pushboolean(L,1);return 1;
+ }
+ // powers.open_school(school): the spell-book school wheel lets the player pick that school (1..8, Light is 5)
+ // even before the character knows one of its powers, including at character creation. Declarative: call it
+ // while loading; it lasts while the addon is enabled.
+ static int openSchool(lua_State* L){
+  auto a=context(L);if(!(a->caps&powerCast)||!(a->owner->available&powerCast))return luaL_error(L,"powers.cast unavailable");
+  const lua_Integer school=luaL_checkinteger(L,1);if(school<1||school>8)return luaL_error(L,"powers.open_school takes a school 1..8");
+  a->schools|=1u<<unsigned(school);lua_pushboolean(L,1);return 1;
+ }
  static int heldFocus(lua_State* L){
   auto a=context(L);if(!(a->caps&focusHold)||!(a->owner->available&focusHold))return luaL_error(L,"powers.focus unavailable");
   lua_pushnumber(L,a->focus);return 1;
@@ -944,10 +964,25 @@ private:
  }
  static void budget(lua_State* L,lua_Debug*){
   auto a=context(L);a->instructions-=1000;
-  if(a->instructions<=0){lua_sethook(L,budget,LUA_MASKCOUNT,1);luaL_error(L,"addon instruction budget exceeded");}
+  if(a->instructions<=0){
+   // A tasks.run job pauses here and goes on at the next pulse; anything else stops with an error.
+   if(a->taskRunning&&lua_isyieldable(L)){lua_yield(L,0);return;}
+   lua_sethook(L,budget,LUA_MASKCOUNT,1);luaL_error(L,"addon instruction budget exceeded");}
  }
  static void startBudget(Addon& a){a.logs=0;a.storageOps=0;a.worldOps=0;a.characterOps=0;a.containerReads=0;a.inventoryReads=0;a.statsReads=0;a.nativeCalls.clear();a.aiChanges.clear();a.containerChanges.clear();a.inventoryChanges.clear();++a.execution;a.instructions=100000;lua_sethook(a.state,budget,LUA_MASKCOUNT,1000);}
  static void stopBudget(Addon& a){lua_sethook(a.state,nullptr,0,0);}
+ // tasks.run(fn): fn runs as a task that is paused whenever it uses its instruction budget and resumed at the next
+ // pulse with a fresh one (taskBudget), so a long job (level generation) finishes over several frames instead of
+ // failing. It may also pause itself with coroutine.yield(). A task runs like a timer callback (the same APIs work
+ // in it); an error in it fails the addon as a timer error does. At most 8 tasks per addon.
+ static constexpr int taskBudget=200000;
+ static int runTask(lua_State* L){
+  auto a=context(L);if(!canTime(*a))return luaL_error(L,"tasks.run needs the timers capability");
+  luaL_checktype(L,1,LUA_TFUNCTION);if(a->tasks.size()>=8)return luaL_error(L,"tasks.run: at most 8 tasks per addon");
+  lua_State* co=lua_newthread(L);lua_pushvalue(L,1);lua_xmove(L,co,1);a->tasks.push_back(luaL_ref(L,LUA_REGISTRYINDEX));
+  lua_pushboolean(L,1);return 1;
+ }
+ static int countTasks(lua_State* L){lua_pushinteger(L,lua_Integer(context(L)->tasks.size()));return 1;}
  static int subscribe(lua_State* L){
   auto a=context(L);
   if(!a->loading)return luaL_error(L,"events.on is only allowed while the addon loads (top level of the entry script)");
@@ -1100,6 +1135,7 @@ private:
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,scheduleTimer,1);lua_setfield(L,-2,"after");
   lua_pushboolean(L,1);lua_pushcclosure(L,scheduleTimer,1);lua_setfield(L,-2,"every");
   lua_pushcfunction(L,cancelTimer);lua_setfield(L,-2,"cancel");lua_pushcfunction(L,timerNow);lua_setfield(L,-2,"now");lua_setglobal(L,"timers");
+  lua_newtable(L);lua_pushcfunction(L,runTask);lua_setfield(L,-2,"run");lua_pushcfunction(L,countTasks);lua_setfield(L,-2,"count");lua_setglobal(L,"tasks");
   lua_newtable(L);lua_pushcfunction(L,getSetting);lua_setfield(L,-2,"get");lua_pushcfunction(L,setSetting);lua_setfield(L,-2,"set");lua_pushcfunction(L,settingsStatus);lua_setfield(L,-2,"status");lua_setglobal(L,"storage");
   lua_newtable(L);lua_pushcfunction(L,snapshotWorld);lua_setfield(L,-2,"snapshot");
   lua_pushcfunction(L,readTime);lua_setfield(L,-2,"time");lua_pushcfunction(L,writeTime);lua_setfield(L,-2,"set_time");
@@ -1118,7 +1154,7 @@ private:
   lua_newtable(L);lua_pushcfunction(L,snapshotInventory);lua_setfield(L,-2,"snapshot");lua_setglobal(L,"inventory");
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"snapshot");
   lua_pushboolean(L,1);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"awareness");lua_pushcfunction(L,grantPowers);lua_setfield(L,-2,"grant_powers");lua_setglobal(L,"characters");
-  lua_newtable(L);lua_pushcfunction(L,holdFocus);lua_setfield(L,-2,"hold_focus");lua_pushcfunction(L,spendFocus);lua_setfield(L,-2,"spend_focus");lua_pushcfunction(L,heldFocus);lua_setfield(L,-2,"held_focus");
+  lua_newtable(L);lua_pushcfunction(L,holdFocus);lua_setfield(L,-2,"hold_focus");lua_pushcfunction(L,spendFocus);lua_setfield(L,-2,"spend_focus");lua_pushcfunction(L,teachPower);lua_setfield(L,-2,"teach");lua_pushcfunction(L,openSchool);lua_setfield(L,-2,"open_school");lua_pushcfunction(L,heldFocus);lua_setfield(L,-2,"held_focus");
   lua_pushcfunction(L,readCaster);lua_setfield(L,-2,"caster");lua_pushcfunction(L,holdBindings);lua_setfield(L,-2,"hold_bindings");lua_pushcfunction(L,playGesture);lua_setfield(L,-2,"gesture");lua_setglobal(L,"powers");
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,setLight,1);lua_setfield(L,-2,"set");lua_pushboolean(L,1);lua_pushcclosure(L,setLight,1);lua_setfield(L,-2,"place");lua_pushcfunction(L,removeLight);lua_setfield(L,-2,"remove");
   lua_pushcfunction(L,listLights);lua_setfield(L,-2,"list");lua_setglobal(L,"lights");
@@ -1407,7 +1443,7 @@ public:
  void notifyPhase(const std::string& phase,uint64_t generation,const std::string& only=""){
   if(only.empty())phaseName=phase;
   // A spend asked for in a session that ended is dropped with it.
-  if(only.empty()&&phase!="session")for(auto& a:addons)a->spend=0;
+  if(only.empty()&&phase!="session")for(auto& a:addons){a->spend=0;a->teach.clear();}
   if(only.empty())for(auto& a:addons)clearTimers(*a);
   // Placed lights belong to the level that was playing; leaving the session forgets them (follow lights stay).
   if(only.empty()&&phase!="session")for(auto& a:addons)a->lights.erase(std::remove_if(a->lights.begin(),a->lights.end(),[](const LightSpec& l){return l.placed;}),a->lights.end());
@@ -1422,7 +1458,25 @@ public:
   }
  }
  void setTime(uint64_t now){if(now>clock)clock=now;}
+ // Each pulse, every task of every addon goes on for one budget (see runTask).
+ void runTasks(){
+  for(auto& owned:addons){auto& a=*owned;if(!a.enabled||a.tasks.empty()||!canTime(a))continue;
+   for(size_t i=0;i<a.tasks.size()&&a.enabled;){
+    auto L=a.state;if(!lua_checkstack(L,4))break;lua_rawgeti(L,LUA_REGISTRYINDEX,a.tasks[i]);lua_State* co=lua_tothread(L,-1);lua_pop(L,1);
+    if(!co){luaL_unref(L,LUA_REGISTRYINDEX,a.tasks[i]);a.tasks.erase(a.tasks.begin()+std::ptrdiff_t(i));continue;}
+    startBudget(a);a.instructions=taskBudget;lua_sethook(co,budget,LUA_MASKCOUNT,1000);a.timerRunning=true;a.taskRunning=true;
+    int results=0;const int status=lua_resume(co,L,0,&results);
+    a.taskRunning=false;a.timerRunning=false;lua_sethook(co,nullptr,0,0);stopBudget(a);
+    if(status==LUA_YIELD){lua_pop(co,results);commitAiChanges(a);commitSettings(a);++i;continue;}
+    if(status!=LUA_OK){luaL_traceback(L,co,lua_tostring(co,-1),0);}
+    luaL_unref(L,LUA_REGISTRYINDEX,a.tasks[i]);a.tasks.erase(a.tasks.begin()+std::ptrdiff_t(i));
+    if(status!=LUA_OK){failure(a,"task failed");lua_settop(L,0);break;}
+    commitAiChanges(a);commitSettings(a);lua_settop(L,0);
+   }
+  }
+ }
  void runTimers(){
+  runTasks();
   if(addons.empty())return;
   const size_t count=addons.size(),start=timerCursor%count;size_t callbacks=0;
   for(size_t round=0;round<4&&callbacks<16;++round)for(size_t offset=0;offset<count&&callbacks<16;++offset){
@@ -1494,6 +1548,13 @@ public:
  }
  int desiredBindings()const{
   int total=0;for(const auto& a:addons)if(a->enabled&&(a->caps&powerCast)&&(available&powerCast))total+=a->bindings;return (std::min)(total,4);
+ }
+ uint32_t openSchools()const{uint32_t m=0;for(const auto& a:addons)if(a->enabled&&(a->caps&powerCast)&&(available&powerCast))m|=a->schools;return m;}
+ bool teachWanted()const{for(const auto& a:addons)if(!a->teach.empty())return true;return false;}
+ // Powers the addons asked to teach since the last call (taken once), at most `room`.
+ size_t takeTeach(uint32_t* out,size_t room){
+  size_t n=0;for(auto& a:addons){if(a->enabled&&(a->caps&powerCast)&&(available&powerCast))for(uint32_t p:a->teach){bool dup=false;for(size_t i=0;i<n;++i)dup|=out[i]==p;if(!dup&&n<room)out[n++]=p;}a->teach.clear();}
+  return n;
  }
  bool spendWanted()const{for(const auto& a:addons)if(a->spend>0)return true;return false;}
  // Focus the addons asked to spend since the last call (taken once); at most 0.5 in one pulse.

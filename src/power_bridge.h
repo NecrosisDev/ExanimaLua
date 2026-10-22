@@ -32,7 +32,8 @@ using Queue=void(*)(uintptr_t,char(*)(void*),void*);
 static Cast original=nullptr;static bool created=false,installed=false;
 static Create create=nullptr;static Apply apply=nullptr,pose=nullptr;static Publish publish=nullptr;static Remove remove=nullptr;static Probe probe=nullptr;
 static Queue enqueue=nullptr;
-static bool castPossible=false,lightsPossible=false,focusPossible=false;
+static bool castPossible=false,lightsPossible=false,focusPossible=false,teachPossible=false;
+using Learn=void(*)(uintptr_t,int,uint32_t);static Learn learn=nullptr;static std::atomic<uint64_t> taught{0};
 static std::atomic<bool> listening{false},pending{false};
 static std::atomic<unsigned> faults{0},refused{0};
 static SRWLOCK queueLock=SRWLOCK_INIT;static std::array<uint32_t,16> casts{};static size_t castCount=0,castLost=0;
@@ -90,8 +91,28 @@ static bool install(){
  if(!created){if(!gamebridge::operation(base+0x1d8340,castPrefix,sizeof castPrefix)||MH_CreateHook((void*)(base+0x1d8340),(void*)cast,(void**)&original)!=MH_OK)return false;created=true;}
  const auto status=MH_EnableHook((void*)(base+0x1d8340));installed=status==MH_OK||status==MH_ERROR_ENABLED;return installed;
 }
+// powers.open_school: the school wheel setup 0x1dd440(owner, stats) sets *(owner+0x258)+0x18c+(school-1) for every
+// school the character knows a power of (0x1d5940 lets a school be clicked only with its flag). The detour runs the
+// game's own pass first, then sets the flags of the schools addons opened. Made at the first request, only on
+// the game's own entry bytes (docs/reviews/powers-teach-review.md).
+using WheelSetup=void(*)(uintptr_t,uintptr_t);static WheelSetup originalWheel=nullptr;static bool wheelCreated=false,wheelInstalled=false,wheelRefused=false;
+static std::atomic<uint32_t> openSchools{0};
+static void wheelSetup(uintptr_t owner,uintptr_t stats){
+ originalWheel(owner,stats);const uint32_t mask=openSchools.load(std::memory_order_relaxed);if(!mask||!stats)return;
+ __try{if(!readable(owner+0x258,8))return;const uintptr_t w=*(uintptr_t*)(owner+0x258);if(!w||!readable(w+0x18c,8))return;
+  for(unsigned s=1;s<=8;++s)if(mask&(1u<<s))*(uint8_t*)(w+0x18c+s-1)=1;}__except(EXCEPTION_EXECUTE_HANDLER){}
+}
+static const unsigned char wheelPrefix[]={0x48,0x8d,0x64,0x24,0xd8,0x48,0x85,0xd2,0x75,0x62};
+static bool installWheel(){
+ if(wheelInstalled)return true;if(wheelRefused)return false;
+ if(!wheelCreated){if(!gamebridge::operation(base+0x1dd440,wheelPrefix,sizeof wheelPrefix)||MH_CreateHook((void*)(base+0x1dd440),(void*)wheelSetup,(void**)&originalWheel)!=MH_OK){wheelRefused=true;return false;}wheelCreated=true;}
+ const auto s=MH_EnableHook((void*)(base+0x1dd440));wheelInstalled=s==MH_OK||s==MH_ERROR_ENABLED;if(!wheelInstalled)wheelRefused=true;return wheelInstalled;
+}
 static void deliver(scripting::Host& owner){
  listening=installed&&owner.handlesCasts();
+ {const uint32_t want=owner.openSchools();
+  if(want&&!wheelInstalled&&!wheelRefused&&!installWheel())owner.report("runtime","warn","powers.open_school unavailable: the school wheel setup did not match or could not be hooked");
+  openSchools=wheelInstalled?want:0;}
  // The bindings detour is made the first time an addon holds one, and only on the game's own entry bytes.
  const int held=owner.desiredBindings();
  if(held>0&&!bindingsInstalled&&!installBindings()){static bool told=false;if(!told){told=true;owner.report("runtime","warn","powers.hold_bindings unavailable: the bindings function did not match or could not be hooked");}}
@@ -171,6 +192,7 @@ static void makeGlow(Live& l,size_t slot,uintptr_t world){
 struct Job {
  // Written by the pulse only while no job is pending; read by the job.
  std::array<Want,maxLights> wants{};size_t wanted=0;float focus=0,spend=0;bool session=false;uint32_t generation=1;
+ std::array<uint32_t,8> teach{};size_t teaching=0;
  // Owned by the job; the pulse reads them only while no job is pending.
  std::array<Live,maxLights> live{};float focusApplied=0;uint32_t focusGeneration=1;uint64_t last=0;bool broken=false;
 };
@@ -304,6 +326,19 @@ static void run(){
   float cost=0;
   if(job.spend>0&&m.get(player+0xd80,cost)&&std::isfinite(cost)&&cost>=0)*(float*)(player+0xd80)=cost+job.spend;
  }
+ // powers.teach: append {id, 0x1000, 0} to the known-power list (stats +0x188 count, +0x190 16-byte entries) through
+ // the game's own 0x1d3950(stats, id, state), which grows the array with the game's allocator. That function
+ // overwrites an entry with the same id, so the list is read first and a known power (by id & 0x3ffff) is skipped.
+ if(teachPossible&&job.teaching){
+  uintptr_t stats=0,entries=0;int32_t count=0;
+  if(m.get(player+0x10a0,stats)&&stats&&m.get(stats+0x188,count)&&count>=0&&count<=4096&&m.get(stats+0x190,entries)&&(count==0||(entries&&readable(entries,size_t(count)*16)))){
+   for(size_t t=0;t<job.teaching;++t){const uint32_t power=job.teach[t];bool known=false;
+    for(int32_t i=0;i<count&&!known;++i)known=((*(const uint32_t*)(entries+size_t(i)*16))&0x3ffff)==power;
+    if(!known){learn(stats,int(power),0x1000u);++taught;
+     if(!m.get(stats+0x188,count)||count<0||count>4096||!m.get(stats+0x190,entries)||(count&&!readable(entries,size_t(count)*16)))break;}}
+  }
+  job.teaching=0;
+ }
 }
 static char queued(void* payload){
  __try{if(payload==&job)run();else ++faults;}__except(EXCEPTION_EXECUTE_HANDLER){++faults;}
@@ -322,10 +357,11 @@ static void step(scripting::Host& owner,const std::string& phase){
  if(job.generation!=generation){job.generation=generation;job.broken=false;}
  const auto lights=owner.desiredLights();const float focus=owner.desiredFocus();
  bool holding=job.focusApplied!=0;for(const auto& l:job.live)holding|=l.node!=0;
- const bool spending=owner.spendWanted();
- if(lights.empty()&&focus==0&&!holding&&!spending)return;
+ const bool spending=owner.spendWanted(),teaching=teachPossible&&owner.teachWanted();
+ if(lights.empty()&&focus==0&&!holding&&!spending&&!teaching)return;
  if(!worldemitters::queueIdle())return;
  job.spend=playing&&focusPossible?owner.takeSpend():0.0f;
+ job.teaching=playing&&teachPossible?owner.takeTeach(job.teach.data(),job.teach.size()):0;
  job.wanted=0;
  for(const auto& light:lights){if(job.wanted==maxLights)break;auto& w=job.wants[job.wanted++];
   const std::string key=light.addon+"/"+light.light.name;std::memset(w.key,0,sizeof w.key);std::memcpy(w.key,key.data(),(std::min)(key.size(),sizeof w.key-1));w.spec=light.light;}
@@ -342,6 +378,9 @@ static bool available(){
  castPossible=globals()&&gamebridge::operation(base+0x1d8340,castPrefix,sizeof castPrefix);
  const bool queue=globals()&&worldemitters::queueAvailable();
  focusPossible=queue;
+ // 0x1d3950(stats, id, state): the known-power append (reviewed in docs/reviews/powers-teach-review.md).
+ {const unsigned char learnPrefix[]={0x53,0x57,0x56,0x48,0x8d,0x64,0x24,0xe0,0x48,0x89,0xcb,0x89,0xd6,0x44,0x89,0xc7};
+  teachPossible=queue&&gamebridge::operation(base+0x1d3950,learnPrefix,sizeof learnPrefix);if(teachPossible)learn=(Learn)(base+0x1d3950);}
  // 0x50eb0 is the world contract's propagator; its prefix is checked by worldContract().
  lightsPossible=queue&&readable(base+lightClass,0x70)&&gamebridge::operation(base+0x51880,createPrefix,sizeof createPrefix)&&gamebridge::operation(base+0x51eb0,applyPrefix,sizeof applyPrefix)&&
   gamebridge::operation(base+0x121150,probePrefix,sizeof probePrefix)&&gamebridge::operation(base+0x5bed0,removePrefix,sizeof removePrefix)&&gamebridge::operation(base+0x5a420,publishPrefix,sizeof publishPrefix);

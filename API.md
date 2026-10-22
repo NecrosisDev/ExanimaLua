@@ -158,6 +158,8 @@ mean" hint; in `optional` it is logged and ignored.
 | `timers.every(seconds, fn)` | timer ID | repeats (0.01..86400) until cancelled |
 | `timers.cancel(id)` | boolean | true when a pending timer of this addon was removed |
 | `timers.now()` | seconds | presentation clock, not game time |
+| `tasks.run(fn)` | true | runs `fn` as a task: when it uses up its instruction budget (200,000 per pulse) it pauses and goes on at the next pulse, so a long job such as level generation finishes over several frames; `coroutine.yield()` pauses it early; works like a timer callback; at most 8 per addon; needs `timers` (0.28.0) |
+| `tasks.count()` | integer | this addon's unfinished tasks |
 | `storage.get(key, default)` | copy of the value | per-user, shared across campaigns |
 | `storage.set(key, value)` | nothing | nil removes; written to disk later |
 | `storage.status()` | `"saved"`, `"pending"`, `"error"` or `"conflict"` | |
@@ -197,6 +199,8 @@ mean" hint; in `optional` it is logged and ignored.
 | `powers.caster()` | `{focus, focus_ceiling, focus_reserve, bindings, bindings_used, last_power, techniques}` or nil | the player's thaumaturgy state; needs `powers.cast`; see Powers and lights. `last_power` is the last instant power cast (any school, 0 after a sustained or continuous one), the value Iteration compares; a Light cast the runtime takes records itself there too |
 | `powers.gesture(kind)` | boolean | the player plays a cast motion and no power fires: `"channel"` (the push motion 0x22) or `"thrust"` (Shock's 0x27); next pulse, only while standing with no action running; it ends after about 1.2 s, or at once when the player attacks or guards; false when one is already waiting |
 | `powers.hold_bindings(n)` | true | this addon's held powers use `n` (0..4) of the player's Continuity bindings, so the game's own continuous powers see that many fewer; `powers.caster().bindings` still reports the full count; needs `powers.cast` |
+| `powers.open_school(school)` | true | the spell-book school wheel lets that school (1..8, Light is 5) be picked even before the character knows one of its powers, including at character creation; call while loading; needs `powers.cast` (0.28.0) |
+| `powers.teach(power)` | boolean | the player's character comes to know a Light-school power (`power & 0xff00 == 0x500`), so the spell book's Light page opens; a power already known keeps its progress; saved with the character; false outside a session; needs `powers.cast` (0.28.0) |
 | `lights.set(name, spec)` | true | keep a point light near the player's head; see Powers and lights; not while loading |
 | `lights.place(name, spec)` | true | a point light standing at `spec.position` until the level ends; see Powers and lights |
 | `lights.remove(name)` | boolean | true when this addon had that light |
@@ -1972,6 +1976,11 @@ Declare `timers` in required or optional capabilities. The API is:
 - `timers.every(seconds, callback)` repeats until cancelled and returns an ID.
 - `timers.cancel(id)` returns true if this addon owned a pending timer with that ID.
 - `timers.now()` returns the current monotonic presentation time in seconds.
+- `tasks.run(fn)` runs a long job in slices: each pulse it gets 200,000 Lua instructions, pauses where it ran out
+  (even deep inside nested Lua calls) and resumes there next pulse. A pause cannot happen inside a C callback such
+  as a `table.sort` comparator; running out there is an error as in any callback.
+- `powers.open_school(school)` (school 1..8; Light is 5) lets the spell-book wheel pick that school before the
+  character knows any of its powers, including at character creation. Call it while loading.
 
 ```lua
 local reminder
