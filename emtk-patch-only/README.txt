@@ -13,7 +13,7 @@ mods stay as they are.
 Applies to
   EMTK 0.1.0-dev, source commit b422845374d579e155dd4a07d85b5ebc0f779650 (6 September 2025), Windows x64.
   The DLL here was built from that commit plus emtk-startup.patch.
-  emtk_framework.dll  sha256 15eb11270da703c96e6c6dae62654636487a7caba9aeebe2653b11dafaefdf14
+  emtk_framework.dll  sha256 f1265b99a1f33d42c50f5ad606513d7ad2537c0feb3ee924aa91a01899d3abaf
 
 What is here
   emtk_framework.dll   the patched framework, ready to drop in
@@ -46,3 +46,8 @@ Notes
   - Asset precedence follows the profile priority: a higher number wins, so a mod listed later overrides
     earlier mods' files of the same name.
   - Lua mods need both the runtime and the mod enabled in the profile; a disabled entry never runs.
+  - The game no longer opens EMTK's log console window; the log file is still written to
+    %APPDATA%\exanima-modding-toolkit\log. To see the console, set the environment variable EMTK_CONSOLE=1.
+  - Fixes stock EMTK serving mod archives wrongly: a game read that starts partway into a packed file, or
+    continues where the last read stopped, now gets the right bytes. Before, any enabled mod could give wrong
+    textures and lighting, empty inventories or a freeze.

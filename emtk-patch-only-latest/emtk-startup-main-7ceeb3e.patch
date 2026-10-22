@@ -1,5 +1,228 @@
+diff --git a/framework/src/internal/utils/rpk_intercept.rs b/framework/src/internal/utils/rpk_intercept.rs
+index f5969ad..dcab3e0 100644
+--- a/framework/src/internal/utils/rpk_intercept.rs
++++ b/framework/src/internal/utils/rpk_intercept.rs
+@@ -12,6 +12,7 @@ use windows::Win32::Storage::FileSystem::{
+     SetFilePointer,
+ };
+ use windows::Win32::System::IO::OVERLAPPED;
++use windows::Win32::Foundation::FALSE;
+ use windows::core::BOOL;
+ 
+ use std::collections::{BTreeMap, HashSet};
+@@ -65,7 +66,7 @@ type TReadFile = unsafe extern "system" fn(
+     lp_overlapped: *mut OVERLAPPED,
+ ) -> BOOL;
+ 
+-unsafe fn read_file(
++unsafe extern "system" fn read_file(
+     h_file: HANDLE,
+     lp_buffer: *mut c_void,
+     n_number_of_bytes_to_read: u32,
+@@ -285,87 +286,81 @@ unsafe fn read_file(
+             let buffer = buffer.into_iter().flatten().collect::<Vec<_>>();
+ 
+             unsafe {
+-                ptr::copy_nonoverlapping(buffer.as_ptr(), lp_buffer as _, buffer.len() as _);
+-                *lp_number_of_bytes_read = buffer.len() as u32;
++                let copied = buffer.len().min(n_number_of_bytes_to_read as usize);
++                ptr::copy_nonoverlapping(buffer.as_ptr(), lp_buffer as _, copied);
++                if !lp_number_of_bytes_read.is_null() {
++                    *lp_number_of_bytes_read = copied as u32;
++                }
+ 
+-                SetFilePointer(h_file, buffer.len() as i32, None, FILE_CURRENT);
++                SetFilePointer(h_file, copied as i32, None, FILE_CURRENT);
+             }
+ 
+             return TRUE;
+         } else if packages.contains_key(&file_name) {
+-            // [Asset Data]
++            // [Asset Data] A read may start anywhere inside an entry and run on into the next ones. Each part is served
++            // from the same position within the original entry, or within the mod's file, and the file pointer ends
++            // where a plain read would leave it, so the game's sequential and partial reads see the archive it expects.
+             let state = packages.get(&file_name).expect("Failed to get file state");
+-
+-            // Deduct the table header size from the requested offset.
+-            let requested_offset = requested_offset - state.intercepted_end_of_table;
+-
+-            // Find the entry that matches the requested offset.
+-            let intercepted_entry = state.entries.iter().find(|entry| {
+-                let range =
+-                    entry.intercepted_offset..entry.intercepted_offset + entry.intercepted_size;
+-                range.contains(&(requested_offset as u32))
+-            });
+-
+-            if let Some(entry) = intercepted_entry {
+-                if entry.is_foreign || entry.is_modified {
+-                    let Some(file_name_without_ext) = file_name.file_stem() else {
+-                        break 'try_proxy_file;
+-                    };
+-                    let mod_entries = MOD_ENTRIES
+-                        .get()
+-                        .unwrap()
+-                        .get(&file_name_without_ext.display().to_string())
+-                        .unwrap();
+-                    let file_path = mod_entries.get(&entry.asset_name).unwrap();
+-
+-                    let mut file = fs::File::open(file_path).unwrap();
+-                    let mut buffer = vec![0u8; entry.intercepted_size as usize];
+-                    file.read_exact(&mut buffer).unwrap();
+-
+-                    unsafe {
+-                        ptr::copy_nonoverlapping(
+-                            buffer.as_ptr(),
+-                            lp_buffer as _,
+-                            buffer.len() as _,
+-                        );
+-                        *lp_number_of_bytes_read = buffer.len() as u32;
++            let start = if lp_overlapped.is_null() {
++                requested_offset as u64
++            } else {
++                overlapped_offset(lp_overlapped)
++            };
++            let table_end = state.intercepted_end_of_table as u64;
++            if start < table_end {
++                break 'try_proxy_file;
++            }
++            let wanted = n_number_of_bytes_to_read as usize;
++            let out = lp_buffer as *mut u8;
++            let mut done = 0usize;
++            let mut failed = false;
++            while done < wanted {
++                let at = start + done as u64 - table_end;
++                let Some(entry) = state.entries.iter().find(|e| {
++                    (e.intercepted_offset as u64) <= at
++                        && at < e.intercepted_offset as u64 + e.intercepted_size as u64
++                }) else {
++                    break;
++                };
++                let within = at - entry.intercepted_offset as u64;
++                let take = (wanted - done).min((entry.intercepted_size as u64 - within) as usize);
++                let part = unsafe { std::slice::from_raw_parts_mut(out.add(done), take) };
++                let got = if entry.is_foreign || entry.is_modified {
++                    read_mod_file(&file_name, &entry.asset_name, within, part)
++                } else {
++                    let from = entry.original_offset as u64 + state.original_end_of_table as u64 + within;
++                    unsafe { read_original(*READ_FILE, h_file, from, part) }
++                };
++                match got {
++                    Some(n) => {
++                        done += n;
++                        if n < take {
++                            break;
++                        }
++                    }
++                    None => {
++                        failed = true;
++                        break;
+                     }
+-                    return TRUE;
+                 }
+-
+-                unsafe {
+-                    // Set the file pointer to the start of the original entry.
+-                    SetFilePointer(
+-                        h_file,
+-                        entry.original_offset as i32 + state.original_end_of_table as i32,
+-                        None,
+-                        FILE_BEGIN,
+-                    );
+-
+-                    // Read the original entry.
+-                    let result = READ_FILE(
+-                        h_file,
+-                        lp_buffer,
+-                        n_number_of_bytes_to_read,
+-                        lp_number_of_bytes_read,
+-                        lp_overlapped,
+-                    );
+-
+-                    // Set the file pointer to where exanima expects it to be.
+-                    // This is intercepted offset + intercepted size.
+-                    SetFilePointer(
+-                        h_file,
+-                        (requested_offset + n_number_of_bytes_to_read) as _,
+-                        None,
+-                        FILE_BEGIN,
+-                    );
+-
+-                    // Return the result of the ReadFile call.
+-                    return result;
++            }
++            if failed && done == 0 {
++                error!("Could not serve {} bytes at {} of {}", wanted, start, file_name.display());
++                return FALSE;
++            }
++            unsafe {
++                if !lp_number_of_bytes_read.is_null() {
++                    *lp_number_of_bytes_read = done as u32;
++                }
++                if lp_overlapped.is_null() {
++                    let end = start + done as u64;
++                    let mut high = (end >> 32) as i32;
++                    SetFilePointer(h_file, end as u32 as i32, Some(&mut high), FILE_BEGIN);
++                } else {
++                    complete_overlapped(lp_overlapped, done);
+                 }
+-            } else {
+-                panic!("Failed to find matching intercepted entry for offset: {requested_offset}");
+             }
++            return TRUE;
+         }
+     }
+ 
+@@ -379,3 +374,48 @@ unsafe fn read_file(
+         )
+     }
+ }
++
++/// The offset an OVERLAPPED read names.
++fn overlapped_offset(o: *mut OVERLAPPED) -> u64 {
++    let s = unsafe { (*o).Anonymous.Anonymous };
++    s.Offset as u64 | ((s.OffsetHigh as u64) << 32)
++}
++
++/// Marks an OVERLAPPED read as finished with `done` bytes (the handles the game reads are synchronous).
++unsafe fn complete_overlapped(o: *mut OVERLAPPED, done: usize) {
++    unsafe {
++        (*o).Internal = 0;
++        (*o).InternalHigh = done;
++    }
++}
++
++/// Reads part of an unchanged entry from the original archive at `from`.
++unsafe fn read_original(read: TReadFile, h_file: HANDLE, from: u64, out: &mut [u8]) -> Option<usize> {
++    unsafe {
++        let mut high = (from >> 32) as i32;
++        SetFilePointer(h_file, from as u32 as i32, Some(&mut high), FILE_BEGIN);
++        let mut got = 0u32;
++        if !read(h_file, out.as_mut_ptr() as _, out.len() as u32, &mut got, ptr::null_mut()).as_bool() {
++            return None;
++        }
++        Some(got as usize)
++    }
++}
++
++/// Reads part of a mod's replacement or added file, `within` bytes from its start.
++fn read_mod_file(package: &std::path::Path, name: &str, within: u64, out: &mut [u8]) -> Option<usize> {
++    use std::io::{Seek, SeekFrom};
++    let stem = package.file_stem()?.to_string_lossy().into_owned();
++    let path = MOD_ENTRIES.get()?.get(&stem)?.get(name)?;
++    let mut file = fs::File::open(path).ok()?;
++    file.seek(SeekFrom::Start(within)).ok()?;
++    let mut done = 0;
++    while done < out.len() {
++        match file.read(&mut out[done..]) {
++            Ok(0) => break,
++            Ok(n) => done += n,
++            Err(_) => return None,
++        }
++    }
++    Some(done)
++}
 diff --git a/framework/src/lib.rs b/framework/src/lib.rs
-index a50b713..4d8b2eb 100644
+index a50b713..e4d5bcb 100644
 --- a/framework/src/lib.rs
 +++ b/framework/src/lib.rs
 @@ -6,7 +6,6 @@ mod plugins;
@@ -10,7 +233,29 @@ index a50b713..4d8b2eb 100644
  
  use detours_sys::{
      DetourAttach, DetourIsHelperProcess, DetourRestoreAfterWith, DetourTransactionBegin,
-@@ -159,7 +158,7 @@ unsafe extern "C" fn main() {
+@@ -57,7 +56,10 @@ unsafe extern "system" fn DllMain(
+         if reason == DLL_PROCESS_ATTACH {
+             panic_hook_setup();
+ 
+-            _ = AllocConsole();
++            // The log console opens only on request (EMTK_CONSOLE=1); the log file is always written.
++            if env::var_os("EMTK_CONSOLE").is_some_and(|v| v == "1") {
++                _ = AllocConsole();
++            }
+ 
+             let mut lock = io::stdout().lock();
+             _ = writeln!(lock, "DllMain Loaded");
+@@ -123,7 +125,8 @@ fn panic_hook_setup() {
+ #[instrument(level = "trace")]
+ unsafe extern "C" fn main() {
+     let maybe_data_dir = emtk::data_dir();
+-    ansi_term::enable_ansi_support().unwrap();
++    // Without a console there is nothing to colour.
++    _ = ansi_term::enable_ansi_support();
+     let subscriber = tracing_subscriber::registry().with(fmt::layer().with_filter(env_filter()));
+ 
+     if let Some(data_dir) = maybe_data_dir {
+@@ -159,7 +162,7 @@ unsafe extern "C" fn main() {
      file.read_to_string(&mut buffer)
          .map_err(|e| error!("{}", e))
          .expect("load order contents must be valid UTF-8");
@@ -19,7 +264,7 @@ index a50b713..4d8b2eb 100644
          .expect("load order contents must be valid toml and structure")
          .into_iter()
          .filter(|(id, entry)| {
-@@ -181,6 +180,12 @@ unsafe extern "C" fn main() {
+@@ -181,6 +184,12 @@ unsafe extern "C" fn main() {
              true
          })
          .collect();
@@ -32,7 +277,7 @@ index a50b713..4d8b2eb 100644
  
      let native_packages: Vec<_> = cwd
          .read_dir()
-@@ -238,20 +243,10 @@ unsafe extern "C" fn main() {
+@@ -238,20 +247,10 @@ unsafe extern "C" fn main() {
      // TODO: port plugin configs to emtk_core::plugin::Manifest
      gui::inject_gui();
  

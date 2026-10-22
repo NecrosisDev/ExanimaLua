@@ -12,7 +12,7 @@ profile priority order. Only one EMTK file changes: emtk_framework.dll. Your lau
 
 What is here
   emtk_framework.dll                 the patched framework, ready to drop in
-                                     sha256 e6e124c2ff78488987c9fd8e23d922b45f54c92677b4743fda8255fda121469e
+                                     sha256 f7c81bd99cf5071284abf69365abc922547f04bafe3fd3e47efa866895de6ea8
   emtk-startup-main-7ceeb3e.patch    the source change, if you prefer to build it yourself
   LICENSE-MIT, LICENSE-APACHE        EMTK's licences (the patch is under the same terms)
 
@@ -47,3 +47,8 @@ Notes
   - Lua mods need both the runtime and the mod enabled in the profile; a disabled entry never runs.
   - A mod's native DLL now loads only when that mod is enabled in the profile (stock main loads every mods
     folder that has a config.toml).
+  - The game no longer opens EMTK's log console window; the log file is still written to
+    %APPDATA%\exanima-modding-toolkit\log. To see the console, set the environment variable EMTK_CONSOLE=1.
+  - Fixes stock EMTK serving mod archives wrongly: a game read that starts partway into a packed file, or
+    continues where the last read stopped, now gets the right bytes. Before, any enabled mod could give wrong
+    textures and lighting, empty inventories or a freeze.
