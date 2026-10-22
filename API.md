@@ -166,7 +166,8 @@ mean" hint; in `optional` it is logged and ignored.
 | `timers.every(seconds, fn)` | timer ID | repeats (0.01..86400) until cancelled |
 | `timers.cancel(id)` | boolean | true when a pending timer of this addon was removed |
 | `timers.now()` | seconds | presentation clock, not game time |
-| `tasks.run(fn)` | true | runs `fn` as a task: when it uses up its instruction budget (200,000 per pulse) it pauses and goes on at the next pulse, so a long job such as level generation finishes over several frames; `coroutine.yield()` pauses it early; works like a timer callback; at most 8 per addon; needs `timers` (0.28.0) |
+| `tasks.run(fn [, {budget = n}])` | true | runs `fn` as a task: when it uses up its instruction budget (`n` per pulse, 10,000..200,000, default 200,000) it pauses and goes on at the next pulse, so a long job such as level generation finishes over several frames; works like a timer callback; at most 8 per addon; needs `timers` (0.28.0) |
+| `tasks.yield()` | nothing | inside a task only: pauses it until the next pulse (outside a task, or inside a C callback such as a `table.sort` comparator, it is an error) (0.28.0) |
 | `tasks.count()` | integer | this addon's unfinished tasks |
 | `profile.begin(name)`, `profile.finish(name)` | boolean | a timed scope (name 1..48 bytes, up to 16 open) that appears in the runtime profiler's log as `scope name`; false while the profiler is off (0.28.0) |
 | `profile.scope(name, fn, ...)` | fn's results | runs `fn(...)` and records its time as `scope name` (0.28.0) |
@@ -2003,7 +2004,8 @@ Declare `timers` in required or optional capabilities. The API is:
 - `timers.every(seconds, callback)` repeats until cancelled and returns an ID.
 - `timers.cancel(id)` returns true if this addon owned a pending timer with that ID.
 - `timers.now()` returns the current monotonic presentation time in seconds.
-- `tasks.run(fn)` runs a long job in slices: each pulse it gets 200,000 Lua instructions, pauses where it ran out
+- `tasks.run(fn [, {budget = n}])` runs a long job in slices: each pulse it gets `n` Lua instructions (default
+  200,000; a lower budget keeps each frame cheaper), pauses where it ran out or at `tasks.yield()`
   (even deep inside nested Lua calls) and resumes there next pulse. A pause cannot happen inside a C callback such
   as a `table.sort` comparator; running out there is an error as in any callback.
 - `powers.open_school(school)` (school 1..8; Light is 5) lets the spell-book wheel pick that school before the

@@ -204,7 +204,7 @@ private:
   uint64_t gameCalls=0,gameCallsTotal=0,failures=0;std::chrono::steady_clock::time_point profileStart{};bool profileOpen=false;const char* profileLabel="callback";int budgetGiven=100000;
   std::vector<std::pair<std::string,std::chrono::steady_clock::time_point>> scopes;
   bool loading=true,enabled=true;int instructions=0,storageOps=0,worldOps=0,characterOps=0;
-  bool timerRunning=false,taskRunning=false;std::vector<int> tasks;uint64_t execution=0;std::vector<AiChange> aiChanges;int statsReads=0;   // tasks: registry refs of tasks.run coroutines
+  bool timerRunning=false,taskRunning=false;std::vector<int> tasks,taskBudgets;uint64_t execution=0;std::vector<AiChange> aiChanges;int statsReads=0;   // tasks: registry refs of tasks.run coroutines
   std::vector<std::pair<std::string,int>> titleHandlers;std::vector<int> titleAfter,titleActsAs;   // row label -> Lua function reference, anchor, base row it acts as
   std::vector<NativeCall> nativeCalls;
   std::string settingsTitle;std::vector<SettingDef> settingDefs;   // Mod Settings rows, published after a successful load
@@ -1272,16 +1272,26 @@ private:
    const int used=a.budgetGiven-a.instructions;if(used>0)b.instructions+=uint64_t(used);
    a.peakBytes=(std::max)(a.peakBytes,a.bytes);a.gameCalls+=a.nativeCalls.size();}
  }
- // tasks.run(fn): fn runs as a task that is paused whenever it uses its instruction budget and resumed at the next
- // pulse with a fresh one (taskBudget), so a long job (level generation) finishes over several frames instead of
- // failing. It may also pause itself with coroutine.yield(). A task runs like a timer callback (the same APIs work
- // in it); an error in it fails the addon as a timer error does. At most 8 tasks per addon.
+ // tasks.run(fn [, {budget = n}]): fn runs as a task that is paused whenever it uses its instruction budget and
+ // resumed at the next pulse with a fresh one (n per pulse, 10,000..200,000, default 200,000), so a long job (level
+ // generation) finishes over several frames instead of failing. tasks.yield() inside it pauses it early until the
+ // next pulse. A task runs like a timer callback (the same APIs work in it); an error in it fails the addon as a timer
+ // error does. At most 8 tasks per addon.
  static constexpr int taskBudget=200000;
  static int runTask(lua_State* L){
   auto a=context(L);if(!canTime(*a))return luaL_error(L,"tasks.run needs the timers capability");
   luaL_checktype(L,1,LUA_TFUNCTION);if(a->tasks.size()>=8)return luaL_error(L,"tasks.run: at most 8 tasks per addon");
-  lua_State* co=lua_newthread(L);lua_pushvalue(L,1);lua_xmove(L,co,1);a->tasks.push_back(luaL_ref(L,LUA_REGISTRYINDEX));
+  int perPulse=taskBudget;
+  if(!lua_isnoneornil(L,2)){luaL_checktype(L,2,LUA_TTABLE);lua_getfield(L,2,"budget");
+   if(!lua_isnil(L,-1)){if(!lua_isinteger(L,-1)||lua_tointeger(L,-1)<10000||lua_tointeger(L,-1)>taskBudget)return luaL_error(L,"tasks.run budget is an integer 10000..200000");
+    perPulse=int(lua_tointeger(L,-1))/1000*1000;}
+   lua_pop(L,1);}
+  lua_State* co=lua_newthread(L);lua_pushvalue(L,1);lua_xmove(L,co,1);a->tasks.push_back(luaL_ref(L,LUA_REGISTRYINDEX));a->taskBudgets.push_back(perPulse);
   lua_pushboolean(L,1);return 1;
+ }
+ static int yieldTask(lua_State* L){
+  auto a=context(L);if(!a->taskRunning||!lua_isyieldable(L))return luaL_error(L,"tasks.yield is only allowed inside a task (tasks.run), outside C callbacks");
+  return lua_yield(L,0);
  }
  static int countTasks(lua_State* L){lua_pushinteger(L,lua_Integer(context(L)->tasks.size()));return 1;}
  static int subscribe(lua_State* L){
@@ -1436,7 +1446,7 @@ private:
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,scheduleTimer,1);lua_setfield(L,-2,"after");
   lua_pushboolean(L,1);lua_pushcclosure(L,scheduleTimer,1);lua_setfield(L,-2,"every");
   lua_pushcfunction(L,cancelTimer);lua_setfield(L,-2,"cancel");lua_pushcfunction(L,timerNow);lua_setfield(L,-2,"now");lua_setglobal(L,"timers");
-  lua_newtable(L);lua_pushcfunction(L,runTask);lua_setfield(L,-2,"run");lua_pushcfunction(L,countTasks);lua_setfield(L,-2,"count");lua_setglobal(L,"tasks");
+  lua_newtable(L);lua_pushcfunction(L,runTask);lua_setfield(L,-2,"run");lua_pushcfunction(L,countTasks);lua_setfield(L,-2,"count");lua_pushcfunction(L,yieldTask);lua_setfield(L,-2,"yield");lua_setglobal(L,"tasks");
   lua_newtable(L);lua_pushcfunction(L,getSetting);lua_setfield(L,-2,"get");lua_pushcfunction(L,setSetting);lua_setfield(L,-2,"set");lua_pushcfunction(L,settingsStatus);lua_setfield(L,-2,"status");lua_setglobal(L,"storage");
   lua_newtable(L);lua_pushcfunction(L,snapshotWorld);lua_setfield(L,-2,"snapshot");
   lua_pushcfunction(L,readTime);lua_setfield(L,-2,"time");lua_pushcfunction(L,writeTime);lua_setfield(L,-2,"set_time");
@@ -1768,13 +1778,14 @@ public:
   for(auto& owned:addons){auto& a=*owned;if(!a.enabled||a.tasks.empty()||!canTime(a))continue;
    for(size_t i=0;i<a.tasks.size()&&a.enabled;){
     auto L=a.state;if(!lua_checkstack(L,4))break;lua_rawgeti(L,LUA_REGISTRYINDEX,a.tasks[i]);lua_State* co=lua_tothread(L,-1);lua_pop(L,1);
-    if(!co){luaL_unref(L,LUA_REGISTRYINDEX,a.tasks[i]);a.tasks.erase(a.tasks.begin()+std::ptrdiff_t(i));continue;}
-    startBudget(a,"task");a.instructions=taskBudget;a.budgetGiven=taskBudget;lua_sethook(co,budget,LUA_MASKCOUNT,1000);a.timerRunning=true;a.taskRunning=true;
+    if(!co){luaL_unref(L,LUA_REGISTRYINDEX,a.tasks[i]);a.tasks.erase(a.tasks.begin()+std::ptrdiff_t(i));a.taskBudgets.erase(a.taskBudgets.begin()+std::ptrdiff_t(i));continue;}
+    const int perPulse=i<a.taskBudgets.size()?a.taskBudgets[i]:taskBudget;
+    startBudget(a,"task");a.instructions=perPulse;a.budgetGiven=perPulse;lua_sethook(co,budget,LUA_MASKCOUNT,1000);a.timerRunning=true;a.taskRunning=true;
     int results=0;const int status=lua_resume(co,L,0,&results);
     a.taskRunning=false;a.timerRunning=false;lua_sethook(co,nullptr,0,0);stopBudget(a);
     if(status==LUA_YIELD){lua_pop(co,results);commitAiChanges(a);commitSettings(a);++i;continue;}
     if(status!=LUA_OK){luaL_traceback(L,co,lua_tostring(co,-1),0);}
-    luaL_unref(L,LUA_REGISTRYINDEX,a.tasks[i]);a.tasks.erase(a.tasks.begin()+std::ptrdiff_t(i));
+    luaL_unref(L,LUA_REGISTRYINDEX,a.tasks[i]);a.tasks.erase(a.tasks.begin()+std::ptrdiff_t(i));if(i<a.taskBudgets.size())a.taskBudgets.erase(a.taskBudgets.begin()+std::ptrdiff_t(i));
     if(status!=LUA_OK){failure(a,"task failed");lua_settop(L,0);break;}
     commitAiChanges(a);commitSettings(a);lua_settop(L,0);
    }
