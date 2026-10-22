@@ -11,7 +11,16 @@ struct Hit {uintptr_t character=0,attacker=0;float balance=0,health=0;bool downe
 static Apply original=nullptr;static Impact originalImpact=nullptr;
 static bool hookCreated=false,impactCreated=false,installed=false,impactInstalled=false;
 static std::atomic<bool> listening{false};
-struct Strike {uintptr_t attacker=0;uint32_t weapon=0;int part=-1;uint32_t struck=0;bool applied=false;};
+struct Strike {uintptr_t attacker=0;uint32_t weapon=0;int part=-1;uint32_t struck=0;bool applied=false;uintptr_t body=0;};
+// characters.sever: parts whose joint to their parent the runtime cut (held_items_bridge.h). A blow on one, or on a
+// part hanging from one, does not hurt its owner: the apply below is skipped (the contact sound already played).
+static std::array<std::atomic<uintptr_t>,64> severed{};static std::atomic<int> severedCount{0};
+static bool severedOrBelow(uintptr_t part){
+ if(!part||severedCount.load(std::memory_order_relaxed)<=0)return false;
+ for(int depth=0;part&&depth<8;++depth){for(const auto& s:severed)if(s.load(std::memory_order_relaxed)==part)return true;
+  uintptr_t parent=0;if(!copyWorldMemory(part+0x428,&parent,8)||!parent||parent==part)return false;part=parent;}
+ return false;
+}
 static thread_local Strike striking;
 static SRWLOCK queueLock=SRWLOCK_INIT;
 static std::array<Hit,64> queue;static size_t queued=0,lost=0;
@@ -48,6 +57,7 @@ static int readHits(uint32_t after,HitRecord* out,int capacity){
  ReleaseSRWLockShared(&hitsLock);return n;
 }
 static unsigned char applied(uintptr_t character,float balance,float health,char canFall){
+ if(striking.body&&severedOrBelow(striking.body))return 0;   // a severed limb: no damage, no stagger, no hit event
  const auto result=original(character,balance,health,canFall);
  __try{recordHit(character,striking.attacker,balance,health);}__except(EXCEPTION_EXECUTE_HANDLER){}
  if(listening.load(std::memory_order_relaxed)){
@@ -68,7 +78,9 @@ static uint32_t weaponRecord(uintptr_t body){
  return 0;
 }
 static Strike strikeOf(uintptr_t attacker){
- Strike s;s.attacker=attacker;if(!listening.load(std::memory_order_relaxed))return s;
+ Strike s;s.attacker=attacker;
+ if(severedCount.load(std::memory_order_relaxed)>0)copyWorldMemory(attacker+0xc20,&s.body,8);
+ if(!listening.load(std::memory_order_relaxed))return s;
  uintptr_t weapon=0,part=0;int index=-1;
  if(copyWorldMemory(attacker+0xc38,&weapon,8)&&weapon)s.weapon=weaponRecord(weapon);
  if(copyWorldMemory(attacker+0xc20,&part,8)&&part&&copyWorldMemory(part+0x468,&index,4)){

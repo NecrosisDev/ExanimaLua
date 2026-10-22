@@ -84,6 +84,7 @@ static bool editMember(const char* name,std::string& bytes){bool changed=false;i
 #include "sound_bridge.h"
 #include "inventory_exports.h"
 #include "world_fire_bridge.h"
+#include "held_items_bridge.h"
 // An addon's shared registrations end together (unload, error, disable): rows and served members, then placements.
 static void forgetShared(const std::string& owner){sharedlua::forget(owner);placements::forget(owner);}
 static bool addPlacement(const std::string& owner,const std::string& level,uint32_t item,const float* position,float yaw){
@@ -262,7 +263,7 @@ static void pumpPresentation(uint64_t thread,uint64_t windowThread,const std::st
  tickBoosts(host,worldPulse&&!boosts.empty()?captureCharacters():nullptr,worldPulse,now);
  frametime::effects+=frametime::since(sectionStart);
  {const auto start=frametime::stamp();session.tickTimers();const double d=frametime::since(start);frametime::lua+=d;frametime::luaWorst=(std::max)(frametime::luaWorst,d);}
- sectionStart=frametime::stamp();invexports::pulse(worldPulse,now);worldfires::pulse(host,worldPulse);frametime::exports+=frametime::since(sectionStart);
+ sectionStart=frametime::stamp();invexports::pulse(worldPulse,now);worldfires::pulse(host,worldPulse);helditems::pulse(host,worldPulse);if(helditems::possible)severing::pulse(host,worldPulse);frametime::exports+=frametime::since(sectionStart);
  host.flushSettings();
 }
 #include "presentation.h"
@@ -339,6 +340,7 @@ static bool start(){
  if(worldemitters::torchPossible){worldemitters::torch=(worldemitters::Torch)(base+0x149740);worldemitters::publish=(worldemitters::Publish)(base+0x5a420);worldemitters::pose=(worldemitters::Pose)(base+0x50eb0);}
  if(worldemitters::possible||worldemitters::firePossible||worldemitters::extinguishPossible||worldemitters::torchPossible)worldemitters::enqueue=(worldemitters::Queue)(base+0x1a890);
  if(worldemitters::firePossible)worldfires::availableAttach();   // effects.attach_fire
+ if(charactersPossible&&nativePossible)helditems::available();   // characters.drop_held
  if(frameReady&&nativePossible&&worldPossible)powers::available();
  host.setCasterRead(powers::readCaster);
  worldMutationReady=worldMutationsIdle;
