@@ -45,9 +45,9 @@ inline constexpr CapabilityName capabilityNames[]={
  {"containers.edit",containerEdit},{"inventory.read",inventoryRead},{"inventory.transfer",inventoryTransfer},{"equipment.write",equipmentWrite},
  {"weapons.switch",weaponSwitch},{"world.pickup",worldPickup},{"world.drop",worldDrop},{"weapons.equip",weaponEquip},{"inventory.bags",inventoryBags},
  {"weapons.unequip",weaponUnequip},{"shields.equip",shieldEquip},{"items.use",itemsUse},{"world.use",worldUse},{"world.levers",worldLevers},
- {"world.doors",worldDoors},{"world.teleporters",worldTeleporters},{"world.devices",worldDevices},{"world.spawn",worldSpawn},
+ {"world.doors",worldDoors},{"world.teleporters",worldTeleporters},{"world.devices",worldDevices},{"world.fire",worldDevices},{"world.spawn",worldSpawn},
  {"events.combat",combatEvents},{"world.time",worldTime},{"storage.save",saveData},{"events.script",scriptEvents},{"script.flags",scriptFlags},
- {"items.stats",itemStats},{"events.zone",zoneEvents},{"events.messages",gameMessages},{"title.rows",titleRows},{"levels.serve",levelsServe},
+ {"items.stats",itemStats},{"events.zone",zoneEvents},{"events.messages",gameMessages},{"title.rows",titleRows},{"levels.serve",levelsServe},{"levels.read",levelsServe},
  {"player.damage",playerDamage},{"player.push",playerPush},{"levels.drive",levelsDrive},
  {"powers.cast",powerCast},{"powers.focus",focusHold},{"world.lights",worldLights},{"events.gear_use",gearUse},{"items.condition",itemsCondition},
  {"levels.flow",levelsFlow},{"assets.read",assetsRead},{"player.place",playerPlace},{"ui.notify",uiNotify},{"ui.settings",modSettings},{"ui.sound",uiSound},{"items.wear",itemsWear},{"characters.powers",characterPowers},{"characters.damage",charactersDamage},{"characters.marks",characterMarks},{"characters.damage_scale",damageScale},{"characters.hit_sound",hitSound},{"characters.limb_strength",limbStrength},{"characters.body",bodyScale},{"effects.arc",effectsArc}};
@@ -81,6 +81,8 @@ struct Event {
 struct Result { bool handled=false;Action action=Action::none;bool restore=false,consume=false;int wear=-1,dirt=-1; };
 
 struct Module { std::string name,source; };
+// world.light_fire / world.put_out_fire, staged by an addon and run by the runtime (world_fire_bridge.h).
+struct FireOrder { std::string owner,name;bool light=false;std::array<float,3> at{};float size=1; };
 // tasks.worker: one job for a runtime worker thread. Everything the thread touches is in here (copied in at start);
 // the result is read by the main thread only after `state` says it is finished.
 struct WorkerJob {
@@ -192,6 +194,7 @@ public:
   bool(*addWear)(uint32_t item,int wear,int dirt)=nullptr;
   bool(*grantPowers)(uint32_t record,const std::vector<uint32_t>& ids)=nullptr;
   bool(*dialog)(const std::string& title,const std::string& text)=nullptr;
+  bool(*readPackage)(const std::string& package,const std::string& member,std::string& out,std::string& why)=nullptr;
  };
 private:
  // What a subscription listens to; item-use handlers also carry the model name they match.
@@ -215,7 +218,7 @@ private:
   std::vector<std::pair<std::string,std::chrono::steady_clock::time_point>> scopes;
   bool loading=true,enabled=true;int instructions=0,storageOps=0,worldOps=0,characterOps=0;
   bool timerRunning=false,taskRunning=false;std::vector<int> tasks,taskBudgets;
-  struct Worker {uint32_t handle=0;std::shared_ptr<WorkerJob> job;int callback=LUA_NOREF;};std::vector<Worker> workers;uint64_t execution=0;std::vector<AiChange> aiChanges;int statsReads=0;   // tasks: registry refs of tasks.run coroutines
+  struct Worker {uint32_t handle=0;std::shared_ptr<WorkerJob> job;int callback=LUA_NOREF;};std::vector<Worker> workers;std::vector<FireOrder> fireOrders;uint64_t execution=0;std::vector<AiChange> aiChanges;int statsReads=0;   // tasks: registry refs of tasks.run coroutines
   std::vector<std::pair<std::string,int>> titleHandlers;std::vector<int> titleAfter,titleActsAs;   // row label -> Lua function reference, anchor, base row it acts as
   std::vector<NativeCall> nativeCalls;
   std::string settingsTitle;std::vector<SettingDef> settingDefs;   // Mod Settings rows, published after a successful load
@@ -651,6 +654,23 @@ private:
   }
  }
  public:void cancelAllWorkers(){for(auto& a:addons)cancelWorkers(*a);}private:
+ // world.light_fire(name, {position = {x, y, z}, size = s}) / world.put_out_fire(name): see world_fire_bridge.h.
+ // Staged from timer callbacks (world.fire, an alias of world.devices); true when staged. size 0.25..2 (1 is a
+ // medium fire); name 1..31 bytes, this addon's handle; at most 4 orders a callback.
+ static int fireOrder(lua_State* L,bool light){
+  auto a=context(L);if(!(a->caps&worldDevices)||!(a->owner->available&worldDevices))return luaL_error(L,"world.%s needs the world.fire capability",light?"light_fire":"put_out_fire");
+  if(!a->timerRunning||a->loading)return luaL_error(L,"world.%s is only allowed in timer and event callbacks",light?"light_fire":"put_out_fire");
+  size_t n=0;const char* name=luaL_checklstring(L,1,&n);if(!n||n>31||std::memchr(name,0,n))return luaL_error(L,"fire name must be 1..31 bytes");
+  if(a->fireOrders.size()>=4)return luaL_error(L,"at most 4 fire orders a callback");
+  FireOrder o;o.owner=a->id;o.name.assign(name,n);o.light=light;
+  if(light){luaL_checktype(L,2,LUA_TTABLE);lua_getfield(L,2,"position");if(!lua_istable(L,-1))return luaL_error(L,"light_fire needs position = {x, y, z}");
+   for(int i=0;i<3;++i){lua_rawgeti(L,-1,i+1);if(!lua_isnumber(L,-1))return luaL_error(L,"light_fire position needs three numbers");const double v=lua_tonumber(L,-1);
+    if(!std::isfinite(v)||std::abs(v)>10000000)return luaL_error(L,"light_fire position outside supported range");o.at[size_t(i)]=float(v);lua_pop(L,1);}
+   lua_pop(L,1);lua_getfield(L,2,"size");if(!lua_isnil(L,-1)){const double s=luaL_checknumber(L,-1);if(!std::isfinite(s)||s<0.25||s>2)return luaL_error(L,"light_fire size is 0.25..2");o.size=float(s);}lua_pop(L,1);}
+  a->fireOrders.push_back(o);lua_pushboolean(L,1);return 1;
+ }
+ static int lightFire(lua_State* L){return fireOrder(L,true);}
+ static int putOutFire(lua_State* L){return fireOrder(L,false);}
  static int setMark(lua_State* L){
   auto a=context(L);if(!(a->caps&characterMarks)||!(a->owner->available&characterMarks))return luaL_error(L,"characters.marks unavailable");
   Mark m;readTarget(L,1,"characters.set_mark",m.player,m.record,m.handle);
@@ -1060,6 +1080,18 @@ private:
   size_t n=0;const char* path=luaL_checklstring(L,1,&n);if(!n||n>260||std::memchr(path,0,n))return luaL_error(L,"assets.read takes a relative path inside the addon");
   std::string out,why;
   if(!a->owner->shared.readAsset||!a->owner->shared.readAsset(a->id,std::string(path,n),out,why)){lua_pushnil(L);lua_pushstring(L,why.empty()?"unavailable":why.c_str());return 2;}
+  lua_pushlstring(L,out.data(),out.size());return 1;
+ }
+ // levels.read(member, package): the installed bytes of a package member (the .rpk in the game folder), whatever a
+ // mod serves for it; uncompressed (type 0) members only, 8 MiB at most; nil and a reason otherwise. Allowed while
+ // loading, so an addon can build what it serves from the game's own file.
+ static int readPackageMember(lua_State* L){
+  auto a=context(L);if(!(a->caps&levelsServe)||!(a->owner->available&levelsServe))return luaL_error(L,"levels.read needs the levels.read (levels.serve) capability");
+  size_t n=0,p=0;const char* member=luaL_checklstring(L,1,&n);const char* package=luaL_checklstring(L,2,&p);
+  if(!n||n>16||std::memchr(member,0,n))return luaL_error(L,"a member name is 1..16 bytes");
+  if(!p||p>64||std::memchr(package,0,p)||std::memchr(package,'\\',p)||std::memchr(package,'/',p)||std::memchr(package,':',p))return luaL_error(L,"the package is its file name, such as Resource.rpk");
+  std::string out,why;
+  if(!a->owner->shared.readPackage||!a->owner->shared.readPackage(std::string(package,p),std::string(member,n),out,why)){lua_pushnil(L);lua_pushstring(L,why.empty()?"unavailable":why.c_str());return 2;}
   lua_pushlstring(L,out.data(),out.size());return 1;
  }
  // levels.add_placement(level, item_id, {x, y, z}[, yaw_degrees]): a loose item added to `level` (a member such
@@ -1578,11 +1610,11 @@ private:
   lua_newtable(L);lua_pushcfunction(L,getSetting);lua_setfield(L,-2,"get");lua_pushcfunction(L,setSetting);lua_setfield(L,-2,"set");lua_pushcfunction(L,settingsStatus);lua_setfield(L,-2,"status");lua_setglobal(L,"storage");
   lua_newtable(L);lua_pushcfunction(L,snapshotWorld);lua_setfield(L,-2,"snapshot");
   lua_pushcfunction(L,readTime);lua_setfield(L,-2,"time");lua_pushcfunction(L,writeTime);lua_setfield(L,-2,"set_time");
-  lua_pushcfunction(L,readLevel);lua_setfield(L,-2,"level");lua_pushcfunction(L,readNearbyObjects);lua_setfield(L,-2,"nearby");lua_setglobal(L,"world");
+  lua_pushcfunction(L,readLevel);lua_setfield(L,-2,"level");lua_pushcfunction(L,readNearbyObjects);lua_setfield(L,-2,"nearby");lua_pushcfunction(L,lightFire);lua_setfield(L,-2,"light_fire");lua_pushcfunction(L,putOutFire);lua_setfield(L,-2,"put_out_fire");lua_setglobal(L,"world");
   lua_newtable(L);lua_pushcfunction(L,readItemStats);lua_setfield(L,-2,"stats");lua_pushcfunction(L,addWear);lua_setfield(L,-2,"add_wear");lua_setglobal(L,"items");
   lua_newtable(L);lua_pushcfunction(L,addTitleRow);lua_setfield(L,-2,"add_row");lua_pushcfunction(L,removeTitleRow);lua_setfield(L,-2,"remove_row");
   lua_pushcfunction(L,enableTitleRow);lua_setfield(L,-2,"set_enabled");lua_pushcfunction(L,setTitleSubtitle);lua_setfield(L,-2,"set_subtitle");lua_setglobal(L,"title");
-  lua_newtable(L);lua_pushcfunction(L,serveLevel);lua_setfield(L,-2,"serve");lua_pushcfunction(L,clearServedLevels);lua_setfield(L,-2,"clear_served");
+  lua_newtable(L);lua_pushcfunction(L,serveLevel);lua_setfield(L,-2,"serve");lua_pushcfunction(L,readPackageMember);lua_setfield(L,-2,"read");lua_pushcfunction(L,clearServedLevels);lua_setfield(L,-2,"clear_served");
   lua_pushcfunction(L,driveLevel);lua_setfield(L,-2,"drive");lua_pushcfunction(L,newGameLevel);lua_setfield(L,-2,"new_game");lua_pushcfunction(L,travelLevel);lua_setfield(L,-2,"travel");lua_pushcfunction(L,addPlacement);lua_setfield(L,-2,"add_placement");lua_setglobal(L,"levels");
   lua_newtable(L);lua_pushcfunction(L,readAsset);lua_setfield(L,-2,"read");lua_setglobal(L,"assets");
   lua_newtable(L);lua_pushcfunction(L,notifyText);lua_setfield(L,-2,"notify");lua_pushcfunction(L,playSound);lua_setfield(L,-2,"sound");lua_pushcfunction(L,showDialog);lua_setfield(L,-2,"dialog");lua_setglobal(L,"ui");
@@ -1719,7 +1751,7 @@ private:
   const int ref=int(lua_tointeger(L,1));const auto& cast=*static_cast<const PowerCast*>(lua_touserdata(L,2));
   static const char* const modes[]={"immediate","sustained","continuous","unknown"};
   lua_rawgeti(L,LUA_REGISTRYINDEX,ref);lua_newtable(L);number(L,"power",cast.power&0x3ffff);number(L,"number",cast.power&0xff);
-  lua_pushstring(L,"light");lua_setfield(L,-2,"school");lua_pushstring(L,modes[(cast.power>>16)&3]);lua_setfield(L,-2,"mode");
+  {const uint32_t s=cast.power&0xff00;lua_pushstring(L,s==0x300?"body":s==0x400?"energy":"light");}lua_setfield(L,-2,"school");lua_pushstring(L,modes[(cast.power>>16)&3]);lua_setfield(L,-2,"mode");
   lua_call(L,1,0);return 0;
  }
  static int invokeMessage(lua_State* L){
@@ -2000,6 +2032,7 @@ public:
  void collectMarks(std::vector<Mark>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&characterMarks)&&(available&characterMarks))out.insert(out.end(),a->marks.begin(),a->marks.end());}
  void collectDamageScales(std::vector<DamageScale>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&damageScale)&&(available&damageScale))out.insert(out.end(),a->scales.begin(),a->scales.end());}
  void collectLimbs(std::vector<LimbStrength>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&limbStrength)&&(available&limbStrength))out.insert(out.end(),a->limbs.begin(),a->limbs.end());}
+ void collectFires(std::vector<FireOrder>& out){out.clear();for(auto& a:addons){if(a->enabled&&(a->caps&worldDevices)&&(available&worldDevices))out.insert(out.end(),a->fireOrders.begin(),a->fireOrders.end());a->fireOrders.clear();}}
  void collectBody(std::vector<BodyScale>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&bodyScale)&&(available&bodyScale))out.insert(out.end(),a->body.begin(),a->body.end());}
  bool arcsWanted()const{for(const auto& a:addons)if(!a->arcs.empty())return true;return false;}
  bool takeArc(std::array<float,4>& out){for(auto& a:addons){if(a->arcs.empty())continue;const bool ok=a->enabled&&(a->caps&effectsArc)&&(available&effectsArc);out=a->arcs.front();a->arcs.erase(a->arcs.begin());if(ok)return true;}return false;}

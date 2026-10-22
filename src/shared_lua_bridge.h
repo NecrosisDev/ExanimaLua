@@ -161,6 +161,26 @@ static bool readAsset(const std::string& owner,const std::string& relative,std::
  std::ifstream file(path,std::ios::binary);if(!file){why="the file could not be opened";return false;}
  out.assign(std::istreambuf_iterator<char>(file),std::istreambuf_iterator<char>());return true;
 }
+// levels.read: a member of a package in the game folder (the mods folder's parent), read from the file itself, so
+// nothing served applies. The .rpk layout: u32 magic 01 0c bf af, u32 table length, 32-byte rows {name[16],
+// u32 offset, u32 size, u32 type, u32}, data at 8 + table length + offset.
+static bool readPackage(const std::string& package,const std::string& member,std::string& out,std::string& why){
+ if(modsDirectory.empty()){why="the game folder is unknown";return false;}
+ const auto path=modsDirectory.parent_path()/std::filesystem::u8path(package);std::ifstream in(path,std::ios::binary);
+ if(!in){why="no such package in the game folder";return false;}
+ unsigned char head[8]{};if(!in.read((char*)head,8)||head[0]!=1||head[1]!=0x0c||head[2]!=0xbf||head[3]!=0xaf){why="not a package file";return false;}
+ uint32_t length=0;std::memcpy(&length,head+4,4);if(length%32||length>(64u<<20)){why="not a package file";return false;}
+ std::vector<char> table(length);if(!in.read(table.data(),length)){why="the package index could not be read";return false;}
+ const std::string wanted=lower(member);
+ for(uint32_t o=0;o<length;o+=32){
+  if(lower(std::string(table.data()+o,strnlen(table.data()+o,16)))!=wanted)continue;
+  uint32_t offset=0,size=0,type=0;std::memcpy(&offset,table.data()+o+16,4);std::memcpy(&size,table.data()+o+20,4);std::memcpy(&type,table.data()+o+24,4);
+  if(type!=0){why="that member is compressed";return false;}if(size>8u*1024*1024){why="the member is larger than 8 MiB";return false;}
+  out.resize(size);in.seekg(std::streamoff(8)+length+offset);if(size&&!in.read(out.data(),size)){out.clear();why="the member could not be read";return false;}
+  return true;
+ }
+ why="no such member in that package";return false;
+}
 static void forget(const std::string& owner){
  for(auto& r:rows)if(r.used&&r.owner==owner){titlerows::unregisterRow(r.label.c_str());r.used=false;r.pressed=false;}
  clearServed(owner);

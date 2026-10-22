@@ -55,8 +55,11 @@ static bool lightSlot(uint32_t slot,uint32_t& power,uintptr_t& who,uint32_t& raw
  if(slot==0xffffffffu){index=-1;for(int i=0;i<10;++i)if(slots[size_t(i)]&0x100000){index=i;break;}}
  if(index<0||index>9)return false;
  const uint32_t id=slots[size_t(index)];
- // Mod schools only: Body (0x300) and Light (0x500), which the game's dispatch does not handle (it fails them).
- if(!(id&0xff)||((id&0xff00)!=0x500&&(id&0xff00)!=0x300)||!copyWorldMemory(caster+0x1228,&blocked,4)||(blocked&0x10))return false;
+ // Mod schools only: Body (0x300) and Light (0x500), which the game's dispatch does not handle (it fails them), and
+ // Energy (0x400) powers outside its cast table 0x2f1030 (0x401 Shock and 0x2040b by id & 0xe0fffff stay the game's).
+ const uint32_t school=id&0xff00,known=id&0xe0fffffu;
+ const bool modEnergy=school==0x400&&known!=0x401&&known!=0x2040b;
+ if(!(id&0xff)||(school!=0x500&&school!=0x300&&!modEnergy)||!copyWorldMemory(caster+0x1228,&blocked,4)||(blocked&0x10))return false;
  power=id&0x3ffff;who=character;raw=id;return true;
 }
 // A taken Light cast also records itself the way 0x1d8340 does after a cast, so Iteration (+0xc40 & 0x800000) sees

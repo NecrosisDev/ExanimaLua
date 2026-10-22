@@ -83,6 +83,7 @@ static bool editMember(const char* name,std::string& bytes){bool changed=false;i
 #include "mod_settings.h"
 #include "sound_bridge.h"
 #include "inventory_exports.h"
+#include "world_fire_bridge.h"
 // An addon's shared registrations end together (unload, error, disable): rows and served members, then placements.
 static void forgetShared(const std::string& owner){sharedlua::forget(owner);placements::forget(owner);}
 static bool addPlacement(const std::string& owner,const std::string& level,uint32_t item,const float* position,float yaw){
@@ -258,7 +259,7 @@ static void pumpPresentation(uint64_t thread,uint64_t windowThread,const std::st
  marks::refresh(worldPulse);damagescale::refresh(host,worldPulse);hitsound::pulse(hitSoundPossible?host.hitMaterial():-1,worldPulse);limbs::refresh(host,worldPulse);bodyscale::pulse(host,hitSoundPossible,worldPulse);
  tickBoosts(host,worldPulse&&!boosts.empty()?captureCharacters():nullptr,worldPulse,now);
  {const auto start=frametime::stamp();session.tickTimers();const double d=frametime::since(start);frametime::lua+=d;frametime::luaWorst=(std::max)(frametime::luaWorst,d);}
- invexports::pulse(worldPulse,now);
+ invexports::pulse(worldPulse,now);worldfires::pulse(host,worldPulse);
  host.flushSettings();
 }
 #include "presentation.h"
@@ -288,7 +289,7 @@ static bool start(){
  hitSoundPossible=worldPossible&&charactersPossible&&readable(base+0x4f0940,56)&&readable(base+0x4f0830,8);titlerows::formOpen=settingstabs::optionsOpen;scripting::Host::subtitleSetter=titlerows::setSubtitle;modsettings::start(controlDirectory);
  if(nativePossible&&!sounds::possible&&!controlDirectory.empty()){sounds::available(controlDirectory.parent_path().parent_path());if(!sounds::possible)host.report("runtime","warn","ui.sound unavailable: Sound.rpk index or the sound functions did not match");}
  host.setSharedApi({sharedlua::addRow,sharedlua::removeRow,sharedlua::enableRow,sharedlua::serve,sharedlua::clearServed,forgetShared,newgame::arm,sharedlua::readAsset,console::notify,
-  modsettings::defineSettings,modsettings::readSetting,sounds::request,addPlacement,gestures::request,gear::queueWear,npcpowers::request,dialogs::request});
+  modsettings::defineSettings,modsettings::readSetting,sounds::request,addPlacement,gestures::request,gear::queueWear,npcpowers::request,dialogs::request,sharedlua::readPackage});
  if(nativePossible&&!gestures::possible)gestures::available();
  if(nativePossible&&!dialogs::possible)dialogs::available();
  if(nativePossible&&!npcpowers::possible)npcpowers::available();

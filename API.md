@@ -125,6 +125,7 @@ mean" hint; in `optional` it is logged and ignored.
 | `world.doors` | `door:set_open(b)`, door `command`/`moving` progress | write | 0.17.0 |
 | `world.teleporters` | `teleporter:use()` opens the destination screen | write | 0.19.0 |
 | `world.devices` | scanners, electrical emitters (`set_active`), fires and static torches (`use`, `ignite`, `extinguish`) | write | 0.19.0 |
+| `world.fire` | `world.light_fire`, `world.put_out_fire` (another name for `world.devices`: either grants both) | write | 0.28.0 |
 | `events.combat` | `events.on("character.hit", fn)` | event | 0.23.0 |
 | `events.script` | `events.on("script.event", fn)` for `LuaEvent(...)` | event | 0.23.0 |
 | `script.flags` | `script_flags.get/set` for `LuaFlag(...)` | core | 0.23.0 |
@@ -147,6 +148,7 @@ mean" hint; in `optional` it is logged and ignored.
 | `ui.notify` | `ui.notify(text)`: a short message on screen that fades | screen | 0.26.0 |
 | `assets.read` | `assets.read(path)`: a file from the addon's own folder | files | 0.26.0 |
 | `levels.serve` | `levels.serve/clear_served`: the game reads your bytes for a package member | files | 0.25.0 |
+| `levels.read` | `levels.read`: the installed bytes of a package member (another name for `levels.serve`: either grants both) | files | 0.28.0 |
 | `events.item_use` | `events.on("item.use", model, fn)` with `items.read` | event | 0.1.0 |
 | `items.read` | item IDs and models in item-use events | read | 0.1.0 |
 | `containers.read` | `event.item.contents` in item-use events | read | 0.1.0 |
@@ -172,6 +174,8 @@ mean" hint; in `optional` it is logged and ignored.
 | `tasks.workers()` | integer | this addon's unfinished jobs (0.28.0) |
 | `tasks.yield()` | nothing | inside a task only: pauses it until the next pulse (outside a task, or inside a C callback such as a `table.sort` comparator, it is an error) (0.28.0) |
 | `tasks.count()` | integer | this addon's unfinished tasks |
+| `world.light_fire(name, {position = {x, y, z}, size = s})` | true | from timer and event callbacks: stages the game's own fire on the placed object nearest `position` (within 60 cm, the player's sector, scene cm as `world.nearby`); `size` 0.25..2 (1 medium); refused later (logged) when a fire already burns within 50 cm; `name` (1..31 bytes) is this addon's handle; 24 lit at most; not kept by saves (0.28.0) |
+| `world.put_out_fire(name)` | true | stages removal of this addon's fire `name` through the game's own removal (0.28.0) |
 | `profile.begin(name)`, `profile.finish(name)` | boolean | a timed scope (name 1..48 bytes, up to 16 open) that appears in the runtime profiler's log as `scope name`; false while the profiler is off (0.28.0) |
 | `profile.scope(name, fn, ...)` | fn's results | runs `fn(...)` and records its time as `scope name` (0.28.0) |
 | `addons.send(target, topic, value)` | boolean | a message to another addon (its ID, or `"*"` for all others): `value` is nil, a boolean, number, string or a table of those (at most 6 deep, 16 KiB) and is copied; delivered at the next pulse; false when no receiver took it (at most 32 waiting each) (0.28.0) |
@@ -207,6 +211,7 @@ mean" hint; in `optional` it is logged and ignored.
 | `title.remove_row(label)` | boolean | |
 | `title.set_enabled(label, on)` | boolean | from callbacks; hides or shows the row from the next menu draw |
 | `title.set_subtitle(label, text)` | boolean | from callbacks; a small second line under this addon's row (printable ASCII, at most 48 bytes; `""` removes it), drawn in the game's small font, not the title font (0.28.0) |
+| `levels.read(member, package)` | bytes, or nil and a reason | the installed copy of `member` from the package file `package` in the game folder (such as `"Resource.rpk"`), read from the file itself so no serve applies; uncompressed members only, 8 MiB at most; allowed while loading (0.28.0) |
 | `levels.serve(member, bytes, package)` | boolean | from callbacks: when the game reads `member` (16 bytes at most) from the package file named `package` (such as `"Resource.rpk"`, no folders), it gets `bytes` instead; names compare without case; only uncompressed (type 0) entries; 4 MiB each, 16 members and 16 MiB in all |
 | `levels.clear_served()` | nothing | stops serving this addon's members |
 | `levels.add_placement(level, item_id, {x, y, z}[, yaw])` | boolean | a loose item (objdb id) added to `level` (a member such as `"exanima01.rfc"`, any case) every time the game reads it, on top of whatever serves that member; position in level cm, yaw in degrees (upright). Declare it while the addon loads, before the level is read. A placement the level already has (same item within 1 cm) is not doubled. Like any level edit it shows in levels the game generates fresh, not in a saved game's copy. 64 per addon; needs `levels.serve`. Use this instead of shipping a whole level file, which replaces other mods' changes and the installed game's own level |
@@ -313,7 +318,7 @@ all addons for that pulse.
 | `"script.event"` | `events.script` | `name`, `value` (text as written), `number` (the value as the game evaluates it: a decimal literal or a variable's value; 0 for a word that is neither) |
 | `"zone.enter"` | `events.zone` | `zone_id`, `record_id`, `name`, `is_player` |
 | `"game.message"` | `events.messages` | `caption`, `text`, `level` (4 and 5 are errors the game shows in a box; lower levels are its log notes) |
-| `"power.cast"` | `powers.cast` | `power` (the id, e.g. `0x20501`), `number` (low byte), `school` (`"light"`), `mode` (`"immediate"`, `"sustained"`, `"continuous"`) |
+| `"power.cast"` | `powers.cast` | `power` (the id, e.g. `0x20501`), `number` (low byte), `school` (`"light"`, `"body"` or `"energy"`), `mode` (`"immediate"`, `"sustained"`, `"continuous"`) |
 | `"gear.use"` | `events.gear_use` | `item` `{id, model, kind = "weapon"/"apparel", carried, condition}`, `target` `{kind, name, record_id, distance}`; method `restore_condition`; return true when handled |
 | `"item.use"` | `events.item_use`, `items.read` | `item`, `target`, `storage_open`; methods `open_storage`, `unlock`, `restore_condition{wear, dirt}` (`items.condition`; an inventory target that is a carried, instanced weapon or apparel piece; lower only, as in `gear.use`), `consume()` (`inventory.transfer`; the used item leaves the pack at the next pulse); each needs a handled (true) result. A weapon or apparel target also has `target.gear` (`"weapon"`/`"apparel"`), `target.carried` and `target.condition` |
 
@@ -327,7 +332,8 @@ The spell book has six schools; Light (domain byte 5, ids `0x5NN`) has a page
 (`pwr_light.pwr`, icons `thmlgtico1.rfi`) but the game ships neither and casts
 nothing there. An addon that ships those two files can add Light powers:
 
-- **`power.cast`** fires when the player casts a Light power from the wheel.
+- **`power.cast`** fires when the player casts a Light (0x5NN) or Body (0x3NN) power from the wheel, or an Energy
+  power (0x4NN) the game's own Energy table does not have (it keeps 0x401 Shock and 0x2040B).
   While any enabled addon listens, the cast is taken (no failure sound) and the
   addon decides what happens; with no listener the game behaves as before.
   Every other school is left to the game. The game does not charge focus for
