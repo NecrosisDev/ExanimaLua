@@ -1,16 +1,61 @@
-name: build
-on: [push, pull_request]
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
+  # build.py finds the x64 MSVC toolchain itself and runs the owned-process tests; no game is needed.
   build:
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - name: Build and run the owned-process tests
-        run: python -X utf8 -B build.py --out out
-      - uses: actions/upload-artifact@v4
+          architecture: x64
+      - name: Build, test and package the runtime
+        run: python -X utf8 -B release.py
+      - uses: actions/upload-artifact@v7
         with:
-          name: ScriptRuntime
-          path: out/mods/com.necrosis.script-runtime
+          name: exanima-lua
+          path: |
+            dist/*.zip*
+            dist/build.log
+            dist/verification.json
+          if-no-files-found: error
+
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Build, test and package the tagged runtime
+        run: python -X utf8 -B release.py --tag "$env:GITHUB_REF_NAME"
+      # A tag with a hyphen (v0.29.0-rc1) publishes a prerelease. An existing release is never replaced.
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = Get-ChildItem dist -File | Where-Object { $_.Name -like '*.zip' -or $_.Name -like '*.zip.sha256' } | ForEach-Object FullName
+          $flags = @('--verify-tag', '--title', "Exanima Lua Runtime $env:GITHUB_REF_NAME", '--generate-notes')
+          if ($env:GITHUB_REF_NAME.Contains('-')) { $flags += '--prerelease' }
+          gh release create $env:GITHUB_REF_NAME @assets --repo $env:GITHUB_REPOSITORY @flags
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
