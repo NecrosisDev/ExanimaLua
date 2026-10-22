@@ -6,6 +6,7 @@ using Register=void(*)(uintptr_t,uintptr_t*,int);using Release=void(*)(uintptr_t
 static Switch requestSwitch=nullptr;static Convert convert=nullptr;static Create create=nullptr;static Initialize initialize=nullptr;
 static Register registerNode=nullptr;static Release release=nullptr;static Remove remove=nullptr;
 static bool switchPossible=false,pickupPossible=false,dropPossible=false,published=false;
+static uintptr_t dropped=0;   // the last drop's new scene node (the inventory exports' drop result)
 struct Target {uint64_t ticket=0;uintptr_t node=0,sector=0,body=0,world=0,player=0,parent=0;uint32_t item=0,state=0;};
 static std::vector<Target> targets;static uint64_t nextTicket=0;
 static void beginPulse(){targets.clear();published=false;}
@@ -113,7 +114,7 @@ static bool commit(const inventorybridge::Target& owner,const scripting::Invento
   uint32_t id=0,state=0,type=0;uintptr_t body=0;
   if(!m.get(node+0x180,id)||id!=actual||!m.get(node+0x184,state)||state!=row.state||!m.get(node+0x160,body)||!body||!m.get(body+0xc,type)||
    !(type&0x10000000)||(type&0xff000000)==0x1a000000||!treeReady(node)||!publishDrop(owner,node,change.position)||!inventorybridge::compact(owner.stats,change.row))return inventorybridge::fault();
-  item=row.item;expected.erase(expected.begin()+change.row);
+  dropped=node;item=row.item;expected.erase(expected.begin()+change.row);
  }else if(change.op==scripting::InventoryOp::spawnItem){
   // A database ID only: a level-local ID names one mutable record, which a second node would share.
   const scripting::InventoryRow row{change.item,0};

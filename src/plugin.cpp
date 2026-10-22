@@ -82,6 +82,7 @@ static bool editMember(const char* name,std::string& bytes){bool changed=false;i
 #include "damage_scale_bridge.h"
 #include "mod_settings.h"
 #include "sound_bridge.h"
+#include "inventory_exports.h"
 // An addon's shared registrations end together (unload, error, disable): rows and served members, then placements.
 static void forgetShared(const std::string& owner){sharedlua::forget(owner);placements::forget(owner);}
 static bool addPlacement(const std::string& owner,const std::string& level,uint32_t item,const float* position,float yaw){
@@ -256,6 +257,7 @@ static void pumpPresentation(uint64_t thread,uint64_t windowThread,const std::st
  marks::refresh(worldPulse);damagescale::refresh(host,worldPulse);hitsound::pulse(hitSoundPossible?host.hitMaterial():-1,worldPulse);limbs::refresh(host,worldPulse);bodyscale::pulse(host,hitSoundPossible,worldPulse);
  tickBoosts(host,worldPulse&&!boosts.empty()?captureCharacters():nullptr,worldPulse,now);
  {const auto start=frametime::stamp();session.tickTimers();const double d=frametime::since(start);frametime::lua+=d;frametime::luaWorst=(std::max)(frametime::luaWorst,d);}
+ invexports::pulse(worldPulse,now);
  host.flushSettings();
 }
 #include "presentation.h"
@@ -359,7 +361,7 @@ extern "C" __declspec(dllexport) bool enable(){
 }
 extern "C" __declspec(dllexport) bool disable(){
  AcquireSRWLockExclusive(&lifecycle);
- {std::lock_guard<std::recursive_mutex> lock(scriptMutex);runtimeEnabled=false;gamebridge::active=false;aiTargets.clear();containerbridge::targets.clear();inventorybridge::target={};worlditems::beginPulse();carrieditems::bags.clear();interactions::targets.clear();aiPulseReady=false;aiWorld=aiPlayer=aiScene=0;host.flushSettings(128,true);session.clear();session.configure(0,false);reloadWanted.clear();presentationWindow=nullptr;titleDrawThread=0;combat::listening=false;combat::clear();powers::listening=false;powers::clear();gear::listening=false;zones::listening=false;zones::clear();gamemessages::clear();scriptcommands::listening=false;scriptcommands::clear();}
+ {std::lock_guard<std::recursive_mutex> lock(scriptMutex);runtimeEnabled=false;gamebridge::active=false;aiTargets.clear();containerbridge::targets.clear();inventorybridge::target={};worlditems::beginPulse();invexports::reset();carrieditems::bags.clear();interactions::targets.clear();aiPulseReady=false;aiWorld=aiPlayer=aiScene=0;host.flushSettings(128,true);session.clear();session.configure(0,false);reloadWanted.clear();presentationWindow=nullptr;titleDrawThread=0;combat::listening=false;combat::clear();powers::listening=false;powers::clear();gear::listening=false;zones::listening=false;zones::clear();gamemessages::clear();scriptcommands::listening=false;scriptcommands::clear();}
  ReleaseSRWLockExclusive(&lifecycle);return true;
 }
 // EMTK submits each enabled addon at startup (and again on reload): its manifest's startup overrides are read
@@ -482,4 +484,11 @@ extern "C" __declspec(dllexport) int mod_settings_help(int id,wchar_t* out,int c
 // Utility from its mod's manifest.toml `category`; 0 when none. Same copy rules as mod_settings_help.
 extern "C" __declspec(dllexport) int mod_settings_category(int id,wchar_t* out,int capacity){return modsettings::category(id,out,capacity);}
 extern "C" __declspec(dllexport) void settings_tab_host_event(int tab,int event){settingstabs::hostedEvent(tab,event);}
+// Inventory exports, contract 1 (inventory_exports.h): the player's carried rows and queued drop/pickup requests that
+// run on the runtime's own pulse. Any thread; nothing here touches game memory.
+extern "C" __declspec(dllexport) uint32_t inventory_exports_version(){return 1;}
+extern "C" __declspec(dllexport) int inventory_list(invexports::ItemV1* out,int capacity){return invexports::list(out,capacity);}
+extern "C" __declspec(dllexport) uint32_t inventory_drop_row(uint64_t ticket,uint32_t row,const float position[3]){return invexports::drop(ticket,row,position);}
+extern "C" __declspec(dllexport) uint32_t inventory_pickup_node(uintptr_t node){return invexports::pickup(node);}
+extern "C" __declspec(dllexport) int inventory_request_state(uint32_t request,uintptr_t* node){return invexports::state(request,node);}
 BOOL WINAPI DllMain(HINSTANCE h,DWORD why,LPVOID){if(why==DLL_PROCESS_ATTACH){module=h;DisableThreadLibraryCalls(h);}return TRUE;}
