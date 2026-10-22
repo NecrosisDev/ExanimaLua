@@ -66,8 +66,10 @@ inline WorldSnapshot readWorld(uintptr_t root,WorldRead read){
 // reads only the fields it needs. At most 64 rows, nearest first.
 struct NearbyObject {std::string name;float distance=0;std::array<float,3> position{};};
 struct NearbyResult {bool ready=false,truncated=false;std::vector<NearbyObject> objects;};
+// A wanted name ending in '*' is a prefix: "crate*" matches every model whose name starts with "crate".
 inline bool sameName(const char* a,size_t n,const std::string& b){
- if(n!=b.size())return false;for(size_t i=0;i<n;++i)if(std::tolower((unsigned char)a[i])!=std::tolower((unsigned char)b[i]))return false;return true;
+ const bool prefix=!b.empty()&&b.back()=='*';const size_t m=prefix?b.size()-1:b.size();
+ if(prefix?n<m:n!=m)return false;for(size_t i=0;i<m;++i)if(std::tolower((unsigned char)a[i])!=std::tolower((unsigned char)b[i]))return false;return true;
 }
 inline NearbyResult readNearby(uintptr_t root,WorldRead read,const std::array<float,3>& centre,float radius,const std::vector<std::string>& names){
  NearbyResult out;if(!root||!read)return out;

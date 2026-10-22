@@ -16,6 +16,7 @@ struct Character {
  float health=NAN,balance=NAN,maximum=NAN,stamina=NAN,staminaMax=NAN,focus=NAN,focusMax=NAN;
  Awareness awareness;
  bool skillsKnown=false,rolesKnown=false;std::vector<Skill> skills;std::vector<Role> roles;
+ std::array<float,2> facing{};bool facingKnown=false;   // horizontal facing (x, z of +0xa08, normalised), as lights follow it
  uint32_t held[2]{};bool heldLit[2]{};   // the record ID in each hand (0 right, 1 left; 0 empty) and whether a fire burns on it
  bool stageKnown=false;uint32_t lifeStage=0;
 };
@@ -86,6 +87,8 @@ inline CharacterSnapshot readCharacters(uintptr_t base,WorldRead read,bool inclu
   if(character.stageKnown){character.dead=stage==4;character.down=stage==1||stage==2||stage==3;}
   else{character.dead=action==npc::actionDeadBits;character.down=!character.dead&&(action&npc::actionDownBit)!=0;}
   for(int h=0;h<2;++h){uintptr_t node=0;heldItem(memory,base,pointer,h,node,character.held[h],character.heldLit[h]);}
+  {float f[3]{};if(memory.get(pointer+0xa08,f)&&std::isfinite(f[0])&&std::isfinite(f[2])){const float n=std::sqrt(f[0]*f[0]+f[2]*f[2]);
+    if(n>0.001f){character.facing={f[0]/n,f[2]/n};character.facingKnown=true;}}}
   character.poolKnown=memory.get(pointer+npc::off::bodyFlags,flags);character.healthPool=(flags&npc::noHealthPool)==0;
   if(!character.poolKnown||!character.healthPool)character.health=NAN;
   if(includeAwareness)character.awareness=readAwareness(memory,base,pointer,playerKnown?player:0);

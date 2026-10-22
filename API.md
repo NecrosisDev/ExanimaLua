@@ -125,6 +125,8 @@ mean" hint; in `optional` it is logged and ignored.
 | `world.doors` | `door:set_open(b)`, door `command`/`moving` progress | write | 0.17.0 |
 | `world.teleporters` | `teleporter:use()` opens the destination screen | write | 0.19.0 |
 | `world.devices` | scanners, electrical emitters (`set_active`), fires and static torches (`use`, `ignite`, `extinguish`) | write | 0.19.0 |
+| `characters.drop_held` | `characters.drop_held(target, side)` (another name for `characters.damage`: either grants both) | write | 0.28.0 |
+| `characters.sever` | `characters.sever(target, part)` (another name for `characters.damage`: either grants both) | write | 0.28.0 |
 | `world.fire` | `world.light_fire`, `world.put_out_fire` (another name for `world.devices`: either grants both) | write | 0.28.0 |
 | `effects.fire` | `effects.attach_fire`, `effects.remove_fire` (another name for `effects.arc`: either grants both) | write | 0.28.0 |
 | `events.combat` | `events.on("character.hit", fn)` | event | 0.23.0 |
@@ -175,10 +177,12 @@ mean" hint; in `optional` it is logged and ignored.
 | `tasks.workers()` | integer | this addon's unfinished jobs (0.28.0) |
 | `tasks.yield()` | nothing | inside a task only: pauses it until the next pulse (outside a task, or inside a C callback such as a `table.sort` comparator, it is an error) (0.28.0) |
 | `tasks.count()` | integer | this addon's unfinished tasks |
+| `characters.sever(target, part)` | true | from callbacks: the joint between an arm part (12/15 shoulder, 13/16 elbow, `character.hit` numbering) and its parent is cut, the way the game's solver breaks a joint; the limb hangs and falls free; blows on it (or on what hangs from it) no longer hurt its owner; staged, it runs on the game thread at the next pulse; a level change or load restores the joints; 8 a callback (0.28.0) |
+| `characters.drop_held(target, side)` | true | from callbacks: the target (`"player"`, a `record_id` or a row with a `handle`) lets go of what its `"right"` or `"left"` hand holds, the way the game drops a dead character's weapons; the item falls as a loose physical item; staged, it runs on the game thread at the next pulse; nothing when the hand is empty or the character is dying; 8 a callback (0.28.0) |
 | `world.light_fire(name, {position = {x, y, z}, size = s})` | true | from timer and event callbacks: stages the game's own fire on the placed object nearest `position` (within 60 cm, the player's sector, scene cm as `world.nearby`); `size` 0.25..2 (1 medium); refused later (logged) when a fire already burns within 50 cm; `name` (1..31 bytes) is this addon's handle; 24 lit at most; not kept by saves (0.28.0) |
 | `world.put_out_fire(name)` | true | stages removal of this addon's fire `name` through the game's own removal (0.28.0) |
 | `world.fires([radius])` | list | with `world.read`: the game's fires and attached flames within `radius` cm (0..5000, default 1000) of the player, nearest first, at most 64: `{position = {x, y, z}, size, mod}` (`mod` for fires and flames addons made); refreshed about six times a second (0.28.0) |
-| `effects.attach_fire(name, target, {size = s})` | true | from callbacks (`effects.fire`, another name for `effects.arc`): the game's small fire following `target` (`"player"` or a row with a `handle`) until removed or the level ends; `size` 0.1..1 (default 0.5); 16 per addon; not saved, never a damage source; weapon targets are not supported yet (0.28.0) |
+| `effects.attach_fire(name, target, {size = s})` | true | from callbacks (`effects.fire`, another name for `effects.arc`): the game's small fire following `target` (`"player"`, a row with a `handle`, or `"weapon:right"`/`"weapon:left"`: the item in the player's hand) until removed or the level ends; `size` 0.1..1 (default 0.5); 16 per addon; not saved, never a damage source (0.28.0) |
 | `effects.remove_fire(name)` | true | removes this addon's attached flame `name` (0.28.0) |
 | `profile.begin(name)`, `profile.finish(name)` | boolean | a timed scope (name 1..48 bytes, up to 16 open) that appears in the runtime profiler's log as `scope name`; false while the profiler is off (0.28.0) |
 | `profile.scope(name, fn, ...)` | fn's results | runs `fn(...)` and records its time as `scope name` (0.28.0) |
@@ -196,6 +200,8 @@ mean" hint; in `optional` it is logged and ignored.
 | `world.set_time(seconds)` | boolean | timer callbacks only |
 | `world.level()` | `{name, mode, id, loaded}` or nil | see below |
 | `world.nearby(radius_cm, {model names})` | `{truncated, objects}` or nil | placed scenery by model name (case-insensitive) within `radius_cm` (≤ 5000) of the player's body, each `{name, kind, distance, position}` with live positions, nearest first, 64 rows; no 512-row cap, so it finds objects `world.snapshot` cuts off |
+| `world.nearby(radius, names, {prefix = true})` | same | names may number 64; a name ending in `*`, or every name with `{prefix = true}`, matches models whose names start with it (`"crate*"`), without case (0.28.0) |
+| `characters.read()` rows: `facing`, `held`, `held_lit` | | `facing = {x, 0, z}`: the horizontal unit vector the body faces (character `+0xa08`, the one `lights.set` follows); `held = {right, left}`: the item ID in each hand; `held_lit`: whether a fire burns on it (a lit torch) (0.28.0) |
 | `characters.snapshot([options])` | `{space, truncated, characters}` or nil | `{details = true}` adds `skills` and `roles` |
 | `characters.awareness()` | same, with `awareness` per NPC | |
 | `characters.grant_powers(record_id, {power ids})` | boolean | a live NPC (by its `record_id` from a snapshot) learns 1..10 powers and prepares them in free slots, so its brain starts casting them; Force (0x2xx), Energy (0x4xx) and Displacement (0x6xx) ids only (the game's NPC caster never casts Mind); applied on the game thread at a following pulse; refused for the player, for a character whose powers are shared with its spawner, and after the level changes. Continuous powers (Shell, continuous Displacement) also need the caster's Concentration tier at Continuity (a technique in the skill slots, not a power id): set it in the actor record; this call does not change skills. Not saved by this call: whether the game's save writes live changes is untraced |
