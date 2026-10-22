@@ -32,7 +32,7 @@ MODS = [
     ('Endless', 'v', 'Endless-*.zip', 'com.necrosis.endless', 'Endless'),
     ('Grindstone', 'v', 'Grindstone-*.zip', 'com.necrosis.grindstone', 'Grindstone'),
     ('LightSchool', 'v', 'LightSchool-*.zip', 'com.necrosis.light-orb', 'Light School'),
-    ('StoneSkin', 'v', 'StoneSkin-*.zip', 'com.necrosis.stoneskin', 'Body School'),
+    ('BodySchool', 'v', 'BodySchool-*.zip', 'com.necrosis.stoneskin', 'Body School'),
     ('Wounds', 'injuries-v', 'Injuries-*.zip', 'com.necrosis.injuries', 'Injuries'),
     ('Fire', 'v', 'Fire-*.zip', 'com.necrosis.fire', 'Fire'),
     ('EnergySchool', 'v', 'EnergySchool-*.zip', 'com.necrosis.energy-school', 'Energy School'),
