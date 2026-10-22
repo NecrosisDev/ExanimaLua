@@ -259,11 +259,11 @@ static void pumpPresentation(uint64_t thread,uint64_t windowThread,const std::st
  combat::deliver(host,captureCharacters);zones::deliver(host,captureCharacters);scriptcommands::deliver(host,worldPulse);gamemessages::deliver(host);
  sharedlua::deliver(host);memberreads::deliver(host);gear::deliver(host);modsettings::deliver(host);sounds::deliver(host);gestures::deliver(host);itemids::deliver(host);recordmerge::deliver(host);npcpowers::deliver(host,captureCharacters);dialogs::deliver();powers::deliver(host);powers::step(host,phase);
  frametime::deliver+=frametime::since(sectionStart);sectionStart=frametime::stamp();
- marks::refresh(worldPulse);damagescale::refresh(host,worldPulse);hitsound::pulse(hitSoundPossible?host.hitMaterial():-1,worldPulse);limbs::refresh(host,worldPulse);bodyscale::pulse(host,hitSoundPossible,worldPulse);
+ marks::refresh(worldPulse);damagescale::refresh(host,worldPulse);hitsound::pulse(hitSoundPossible?host.hitMaterial():-1,worldPulse);limbs::refresh(host,worldPulse);footing::refresh(host,worldPulse);bodyscale::pulse(host,hitSoundPossible,worldPulse);
  tickBoosts(host,worldPulse&&!boosts.empty()?captureCharacters():nullptr,worldPulse,now);
  frametime::effects+=frametime::since(sectionStart);
  {const auto start=frametime::stamp();session.tickTimers();const double d=frametime::since(start);frametime::lua+=d;frametime::luaWorst=(std::max)(frametime::luaWorst,d);}
- sectionStart=frametime::stamp();invexports::pulse(worldPulse,now);worldfires::pulse(host,worldPulse);helditems::pulse(host,worldPulse);if(helditems::possible)severing::pulse(host,worldPulse);frametime::exports+=frametime::since(sectionStart);
+ sectionStart=frametime::stamp();invexports::pulse(worldPulse,now);worldfires::pulse(host,worldPulse);helditems::pulse(host,worldPulse);if(helditems::possible)severing::pulse(host,worldPulse);motions::pulse(host,worldPulse);frametime::exports+=frametime::since(sectionStart);
  host.flushSettings();
 }
 #include "presentation.h"
@@ -340,7 +340,7 @@ static bool start(){
  if(worldemitters::torchPossible){worldemitters::torch=(worldemitters::Torch)(base+0x149740);worldemitters::publish=(worldemitters::Publish)(base+0x5a420);worldemitters::pose=(worldemitters::Pose)(base+0x50eb0);}
  if(worldemitters::possible||worldemitters::firePossible||worldemitters::extinguishPossible||worldemitters::torchPossible)worldemitters::enqueue=(worldemitters::Queue)(base+0x1a890);
  if(worldemitters::firePossible)worldfires::availableAttach();   // effects.attach_fire
- if(charactersPossible&&nativePossible)helditems::available();   // characters.drop_held
+ if(charactersPossible&&nativePossible){helditems::available();motions::available();}   // characters.drop_held, play_motion
  if(frameReady&&nativePossible&&worldPossible)powers::available();
  host.setCasterRead(powers::readCaster);
  worldMutationReady=worldMutationsIdle;

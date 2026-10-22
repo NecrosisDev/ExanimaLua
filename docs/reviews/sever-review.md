@@ -2,8 +2,8 @@
 
 Evidence: Ghidra decompile of Exanima.exe 0.9.5.2g: the character solver `0x15da80` (joint rows at part `+0x320`,
 stride 0x68, count `+0x31c`; row `+0x30` the other body, `+0x38` flags; a row with `0x100000` is skipped: no
-constraint, no muscle), the death routine `0x156480` (character part list `+0x9e0`, count `+0x9d8`; part parent
-`+0x428`), and the Wounds thread's request (E:\Wounds\RUNTIME-REQUESTS.md section 6: `0x89d80` sets the same flag
+constraint, no muscle), ExCamera's reviewed poseBuilder contract (body parts: the array at `*(character +0x918)`,
+count `+0x910`; `+0x928` is the held-item list and `+0x9e0` the support legs; part parent `+0x428`), and the Wounds thread's request (E:\Wounds\RUNTIME-REQUESTS.md section 6: `0x89d80` sets the same flag
 when an object's joint breaks, `0x152a30` toggles it on grip rows). Not run in game.
 
 ## What the runtime writes
@@ -16,6 +16,12 @@ when an object's joint breaks, `0x152a30` toggles it on grip rows). Not run in g
 - As a job on the game ring `0x499990` (never inside a pulse), under SEH, after checking again that the part is in
   that character's list and has a parent other than itself; the row arrays are bounds-checked (`count` 1..64, the
   whole array readable).
+
+## A cut arm's hand
+
+- Before the rows are flagged, the job drops what that arm's hand holds (right arm parts 12/13: hand 0, left 15/16:
+  hand 1) through the same death-path release as `characters.drop_held` (drop-held-review.md), so no held item stays
+  tied by its grip rows to a limb the solver no longer holds.
 
 ## Hits on the cut limb
 

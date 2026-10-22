@@ -22,3 +22,10 @@ combat detour. Not run in game.
 - Copies only, with the runtime's guarded reader: contact point `attacker+0xc28`, part pose `part+0x2a0` (48 bytes),
   the weapon body's motion from `attacker+0xc38` (`+0xf0` and `+0x120`, 48 bytes each), motion `+0x9b8`.
 - No new hook and no write. A 64-entry ring under its own SRW lock; the reader copies records by serial.
+
+## r53b: the part list
+
+The character's body parts are the array at `*(character +0x918)`, count `+0x910` (ExCamera's reviewed poseBuilder
+contract, instructions 0x1768f1 / 0x17691c). Earlier builds read `character +0x928` (count `+0x920`), which is the
+held-item list (`0x155a20` removes released items from it; the death routine `0x156480` drops every entry), so no
+body part was ever found there. Now the parts array is read.

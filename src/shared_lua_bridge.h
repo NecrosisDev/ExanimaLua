@@ -145,7 +145,9 @@ static void loadOverrides(const std::string& id,const std::filesystem::path& mod
    if(why.empty()&&!memberreads::synthetic){memberreads::synthetic=addedIndex;memberreads::syntheticRead=addedRead;
     if(!memberreads::hookFind())owner.report(id.c_str(),"warn","new file names cannot be added (the package name lookup 0x1faf0 is not the game's own); replacing existing files still works");}
   }
-  owner.report(id.c_str(),why.empty()?"info":"warn",why.empty()?("override "+row.first+" ready").c_str():("override "+row.first+" not used: "+why+"; the game's own file stays").c_str());
+  // A cache/ file the addon writes itself (assets.write) is missing on its first run: that is expected, so info.
+  const bool firstRun=why=="the file is missing"&&row.second.rfind("cache/",0)==0;
+  owner.report(id.c_str(),why.empty()||firstRun?"info":"warn",why.empty()?("override "+row.first+" ready").c_str():firstRun?("override "+row.first+" waits for its cached file (written by the addon; used from the next start)").c_str():("override "+row.first+" not used: "+why+"; the game's own file stays").c_str());
  }
 }
 // assets.read: a file under mods/<id> (EMTK loads each addon from that folder), never outside it.
@@ -181,19 +183,38 @@ static bool writeAsset(const std::string& owner,const std::string& relative,cons
 // levels.read: a member of a package in the game folder (the mods folder's parent), read from the file itself, so
 // nothing served applies. The .rpk layout: u32 magic 01 0c bf af, u32 table length, 32-byte rows {name[16],
 // u32 offset, u32 size, u32 type, u32}, data at 8 + table length + offset.
+// The file is read through a mapped view, never ReadFile: EMTK's .rpk interception (rpk_intercept) answers ReadFile on
+// package handles from its own virtual layout, which is not the bytes on disk.
+struct MappedFile {
+ HANDLE file=INVALID_HANDLE_VALUE,mapping=nullptr;uint64_t size=0;
+ ~MappedFile(){if(mapping)CloseHandle(mapping);if(file!=INVALID_HANDLE_VALUE)CloseHandle(file);}
+ bool open(const std::filesystem::path& path){
+  file=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+  if(file==INVALID_HANDLE_VALUE)return false;LARGE_INTEGER s{};if(!GetFileSizeEx(file,&s)||s.QuadPart<=0)return false;size=uint64_t(s.QuadPart);
+  mapping=CreateFileMappingW(file,nullptr,PAGE_READONLY,0,0,nullptr);return mapping!=nullptr;
+ }
+ // Copies [offset, offset + count) into out through a view aligned to the allocation granularity.
+ bool copy(uint64_t offset,size_t count,void* out)const{
+  if(!count)return true;if(offset>size||count>size-offset)return false;
+  SYSTEM_INFO info{};GetSystemInfo(&info);const uint64_t grain=info.dwAllocationGranularity?info.dwAllocationGranularity:65536;
+  const uint64_t start=offset/grain*grain;const size_t span=size_t(offset-start)+count;
+  void* view=MapViewOfFile(mapping,FILE_MAP_READ,DWORD(start>>32),DWORD(start&0xffffffffu),span);if(!view)return false;
+  bool ok=true;__try{std::memcpy(out,(const char*)view+(offset-start),count);}__except(EXCEPTION_EXECUTE_HANDLER){ok=false;}
+  UnmapViewOfFile(view);return ok;
+ }
+};
 static bool readPackage(const std::string& package,const std::string& member,std::string& out,std::string& why){
  if(modsDirectory.empty()){why="the game folder is unknown";return false;}
- const auto path=modsDirectory.parent_path()/std::filesystem::u8path(package);std::ifstream in(path,std::ios::binary);
- if(!in){why="no such package in the game folder";return false;}
- unsigned char head[8]{};if(!in.read((char*)head,8)||head[0]!=1||head[1]!=0x0c||head[2]!=0xbf||head[3]!=0xaf){why="not a package file";return false;}
+ MappedFile f;if(!f.open(modsDirectory.parent_path()/std::filesystem::u8path(package))){why="no such package in the game folder";return false;}
+ unsigned char head[8]{};if(!f.copy(0,8,head)||head[0]!=1||head[1]!=0x0c||head[2]!=0xbf||head[3]!=0xaf){why="not a package file";return false;}
  uint32_t length=0;std::memcpy(&length,head+4,4);if(length%32||length>(64u<<20)){why="not a package file";return false;}
- std::vector<char> table(length);if(!in.read(table.data(),length)){why="the package index could not be read";return false;}
+ std::vector<char> table(length);if(!f.copy(8,length,table.data())){why="the package index could not be read";return false;}
  const std::string wanted=lower(member);
  for(uint32_t o=0;o<length;o+=32){
   if(lower(std::string(table.data()+o,strnlen(table.data()+o,16)))!=wanted)continue;
   uint32_t offset=0,size=0,type=0;std::memcpy(&offset,table.data()+o+16,4);std::memcpy(&size,table.data()+o+20,4);std::memcpy(&type,table.data()+o+24,4);
   if(type!=0){why="that member is compressed";return false;}if(size>8u*1024*1024){why="the member is larger than 8 MiB";return false;}
-  out.resize(size);in.seekg(std::streamoff(8)+length+offset);if(size&&!in.read(out.data(),size)){out.clear();why="the member could not be read";return false;}
+  out.resize(size);if(!f.copy(8ull+length+offset,size,out.data())){out.clear();why="the member could not be read";return false;}
   return true;
  }
  why="no such member in that package";return false;

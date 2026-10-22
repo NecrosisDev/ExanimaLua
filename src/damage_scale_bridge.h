@@ -59,7 +59,9 @@ static bool install(){
  // The game's own entry, or the runtime's own combat-events detour there (combat_bridge.h checked these bytes).
  if(!combat::impactCreated&&!gamebridge::operation(base+0x159a60,entry,sizeof entry)){refused=true;why="the entry 0x159a60 is not the game's";return false;}
  for(int i=0;i<2;++i)if(!gamebridge::operation(base+sites[i],expect[i],sizeof expect[i])){refused=true;why=i?"the bytes at 0x15b2be differ":"the bytes at 0x15b0fc differ";return false;}
- auto* memory=(unsigned char*)VirtualAlloc(nullptr,4096,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);if(!memory){refused=true;why="no stub memory";return false;}
+ // Executable from the start: MH_CreateHook refuses a detour that is not (MH_ERROR_NOT_EXECUTABLE, 7); the page is
+ // made execute-read once the stubs are written.
+ auto* memory=(unsigned char*)VirtualAlloc(nullptr,4096,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);if(!memory){refused=true;why="no stub memory";return false;}
  for(int i=0;i<2;++i){
   stubs[i]=memory+i*256;
   {const auto s=MH_CreateHook((void*)(base+sites[i]),stubs[i],&trampolines[i]);if(s!=MH_OK){refused=true;why=std::string("MH_CreateHook at a site returned ")+std::to_string(int(s));return false;}}
@@ -87,7 +89,8 @@ static void refresh(scripting::Host& owner,bool session){
 }
 }
 // characters.set_hit_sound("player", material): while held, the player's wound sound (character +0xec0, normally
-// WndFls) and every body part's impact sound (part +0x470; parts at character +0x928, count +0x920) are the game's
+// WndFls) and every body part's impact sound (part +0x470; parts: the array at *(character +0x918), count +0x910, as
+// ExCamera's reviewed poseBuilder contract reads them; +0x928/+0x920 is the held-item list) are the game's
 // material sound object 0x4f0940[material] (6 = HitGlm, the golem's stone sound). Equipment refresh ECA40 rewrites
 // +0x470, so each pulse puts it back, remembering the game's latest value; release, a phase change or unload writes
 // the remembered values back where ours is still in place (docs/reviews/hit-sound-review.md).
@@ -115,8 +118,8 @@ static void pulse(int material,bool session){
  if(!active){held=Held{};held.character=player;held.sound=sound;active=true;}
  const uintptr_t wound=get(player+0xec0);
  if(wound&&wound!=sound){held.woundSaved=wound;held.wound=put(player+0xec0,sound)||held.wound;}
- int32_t count=0;if(!copyWorldMemory(player+0x920,&count,4)||count<0||count>64)return;
- for(int32_t i=0;i<count;++i){const uintptr_t part=get(player+0x928+size_t(i)*8);if(!part)continue;
+ int32_t count=0;const uintptr_t list=get(player+0x918);if(!list||!copyWorldMemory(player+0x910,&count,4)||count<0||count>64)return;
+ for(int32_t i=0;i<count;++i){const uintptr_t part=get(list+size_t(i)*8);if(!part)continue;
   int slot=-1;for(int k=0;k<held.parts;++k)if(held.part[size_t(k)]==part)slot=k;
   if(slot<0){if(held.parts>=64)continue;slot=held.parts++;held.part[size_t(slot)]=part;held.partSaved[size_t(slot)]=0;}
   const uintptr_t current=get(part+0x470);
@@ -170,14 +173,60 @@ static void refresh(scripting::Host& owner,bool session){
  const scripting::CharacterSnapshot* roster=(session&&installed&&!wanted.empty())?captureCharacters():nullptr;
  if(roster&&roster->ready)for(const auto& w:wanted)for(const auto& c:roster->characters){
   if(!c.nativeCharacter||(c.stateKnown&&c.dead))continue;if(!scripting::targets(w,c))continue;
-  int32_t parts=0;if(!copyWorldMemory(c.nativeCharacter+0x920,&parts,4)||parts<0||parts>64)continue;
+  // The body parts: the array at *(character +0x918), count +0x910 (+0x928 is the held-item list, not the parts).
+  int32_t parts=0;uintptr_t list=0;if(!copyWorldMemory(c.nativeCharacter+0x910,&parts,4)||parts<0||parts>64||!copyWorldMemory(c.nativeCharacter+0x918,&list,8)||!list)continue;
   for(int32_t i=0;i<parts&&n<128;++i){uintptr_t part=0;int32_t index=-1;
-   if(!copyWorldMemory(c.nativeCharacter+0x928+size_t(i)*8,&part,8)||!part||!copyWorldMemory(part+0x468,&index,4)||index+1!=w.part)continue;
+   if(!copyWorldMemory(list+size_t(i)*8,&part,8)||!part||!copyWorldMemory(part+0x468,&index,4)||index+1!=w.part)continue;
    bool merged=false;for(LONG k=0;k<n;++k)if(next[k].part==part){next[k].factor=(std::min)(next[k].factor,w.factor);merged=true;}
    if(!merged){next[n].part=part;next[n].factor=w.factor;++n;}}
  }
  if(!n&&!published)return;
  InterlockedIncrement(&sequence);MemoryBarrier();std::memcpy(table,next,sizeof(Entry)*size_t(n));count=n;MemoryBarrier();InterlockedIncrement(&sequence);published=n>0;
+}
+}
+// characters.keep_down(target, on): a character who cannot stand stays on the ground (docs/reviews/keep-down-review.md).
+// The footing value +0x12b0 (0..1) is rebuilt each tick by 0x1603f0 (support and foot contacts; it recovers by
+// 0x31c318 a tick up to 1). The character update 0x169200 reads it: below 0.6 the character falls, below 0.3 it is
+// down (+0xdf4 = 0x200) and only at 0.3 or more does the stand-up branch play Get up (0xf/0xe) and set 0x300. A detour
+// after 0x1603f0 caps +0x12b0 at 0.05 for held characters (below 0.1 even an impact picks a fall, never Get up), so the
+// game keeps them down by its own rule; the cap is
+// dropped when released and the footing recovers as usual.
+namespace footing {
+static uintptr_t table[64];static volatile LONG count=0;static volatile LONG sequence=0;static volatile bool published=false;
+using Update=double(*)(uintptr_t);static Update original=nullptr;static bool created=false,installed=false,refused=false;
+static bool held(uintptr_t character){
+ for(int attempt=0;attempt<4;++attempt){
+  const LONG before=sequence;if(before&1){YieldProcessor();continue;}MemoryBarrier();
+  const LONG seen=count;const LONG total=seen<64?seen:64;bool found=false;
+  for(LONG i=0;i<total;++i)if(table[i]==character){found=true;break;}
+  MemoryBarrier();if(sequence==before)return found;
+ }
+ return false;
+}
+static void cap(uintptr_t character){__try{float* f=(float*)(character+0x12b0);if(std::isfinite(*f)&&*f>0.05f)*f=0.05f;}__except(EXCEPTION_EXECUTE_HANDLER){}}
+static double update(uintptr_t character){
+ const double result=original(character);
+ if(published&&held(character))cap(character);
+ return result;
+}
+static bool install(){
+ if(installed)return true;if(refused)return false;
+ const unsigned char entry[]={0x53,0x57,0x56,0x41,0x54,0x41,0x55,0x48,0x8d,0xa4,0x24,0xc0,0xfe,0xff,0xff,0x66,0x0f,0x7f,0xb4,0x24};
+ if(!created){if(!titlerows::untouched(base+0x1603f0,entry,sizeof entry)||MH_CreateHook((void*)(base+0x1603f0),(void*)update,(void**)&original)!=MH_OK){refused=true;return false;}created=true;}
+ const auto s=MH_EnableHook((void*)(base+0x1603f0));installed=s==MH_OK||s==MH_ERROR_ENABLED;if(!installed)refused=true;return installed;
+}
+static std::vector<scripting::KeepDown> wanted;
+static void refresh(scripting::Host& owner,bool session){
+ owner.collectKeepDown(wanted);
+ if(!wanted.empty()&&!installed&&!refused&&!install())owner.report("runtime","warn","characters.keep_down unavailable: the footing update did not match or is hooked by another mod");
+ uintptr_t next[64];LONG n=0;
+ const scripting::CharacterSnapshot* roster=(session&&installed&&!wanted.empty())?captureCharacters():nullptr;
+ if(roster&&roster->ready)for(const auto& w:wanted)for(const auto& c:roster->characters){
+  if(!c.nativeCharacter||(c.stateKnown&&c.dead)||!scripting::targets(w,c)||n>=64)continue;
+  bool seen=false;for(LONG k=0;k<n;++k)seen=seen||next[k]==c.nativeCharacter;if(!seen)next[n++]=c.nativeCharacter;
+ }
+ if(!n&&!published)return;
+ InterlockedIncrement(&sequence);MemoryBarrier();std::memcpy(table,next,sizeof(uintptr_t)*size_t(n));count=n;MemoryBarrier();InterlockedIncrement(&sequence);published=n>0;
 }
 }
 // characters.set_strength / set_anim_rate (target, factor): a held multiple of one of a character's own floats,

@@ -29,3 +29,10 @@ Exanima.exe 0.9.5.2g. Not run in game.
   only compares pointers and touches `+0x594` of the part the game itself is solving, so a stale entry can only match
   a reused allocation for one pulse.
 - Not observed in game.
+
+## r53b: the part list
+
+The character's body parts are the array at `*(character +0x918)`, count `+0x910` (ExCamera's reviewed poseBuilder
+contract, instructions 0x1768f1 / 0x17691c). Earlier builds read `character +0x928` (count `+0x920`), which is the
+held-item list (`0x155a20` removes released items from it; the death routine `0x156480` drops every entry), so no
+body part was ever found there. Now the parts array is read.
