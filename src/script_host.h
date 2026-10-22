@@ -201,7 +201,7 @@ private:
   Host* owner=nullptr;std::string id,error;lua_State* state=nullptr;
   uint64_t caps=0;size_t bytes=0,limit=8*1024*1024;
   std::map<std::string,ProfileBucket> profile,profileTotal;std::unordered_map<std::string,uint64_t> hotLines,hotTotal;size_t peakBytes=0;
-  uint64_t gameCalls=0,gameCallsTotal=0;std::chrono::steady_clock::time_point profileStart{};bool profileOpen=false;const char* profileLabel="callback";int budgetGiven=100000;
+  uint64_t gameCalls=0,gameCallsTotal=0,failures=0;std::chrono::steady_clock::time_point profileStart{};bool profileOpen=false;const char* profileLabel="callback";int budgetGiven=100000;
   std::vector<std::pair<std::string,std::chrono::steady_clock::time_point>> scopes;
   bool loading=true,enabled=true;int instructions=0,storageOps=0,worldOps=0,characterOps=0;
   bool timerRunning=false,taskRunning=false;std::vector<int> tasks;uint64_t execution=0;std::vector<AiChange> aiChanges;int statsReads=0;   // tasks: registry refs of tasks.run coroutines
@@ -515,6 +515,7 @@ private:
    for(const auto& [k,b]:rows){snprintf(line,sizeof line,"   %-34s %8llu calls %9.2f ms  avg %7.3f  worst %7.3f ms  %8llu kinstr\r\n",k.c_str(),(unsigned long long)b.calls,b.ms,b.calls?b.ms/double(b.calls):0.0,b.worst,(unsigned long long)(b.instructions/1000));out+=line;}
    std::vector<std::pair<std::string,uint64_t>> lines(hot.begin(),hot.end());
    std::sort(lines.begin(),lines.end(),[](const auto& x,const auto& y){return x.second>y.second;});
+   if(a.failures){const auto first=a.error.substr(0,a.error.find('\n'));snprintf(line,sizeof line,"   FAILED %llu time(s), last: %s\r\n",(unsigned long long)a.failures,first.substr(0,400).c_str());out+=line;}
    for(size_t i=0;i<lines.size()&&i<8;++i){snprintf(line,sizeof line,"   hot  %-40s %llu samples (x10k instructions)\r\n",lines[i].first.c_str(),(unsigned long long)lines[i].second);out+=line;}
   };
   static double totalSeconds=0;totalSeconds+=windowSeconds;
@@ -1266,7 +1267,8 @@ private:
  static void stopBudget(Addon& a){
   lua_sethook(a.state,nullptr,0,0);
   if(profiling&&a.profileOpen){const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-a.profileStart).count();a.profileOpen=false;
-   auto& b=a.profile[a.profileLabel];++b.calls;b.ms+=ms;b.worst=(std::max)(b.worst,ms);
+   std::string key(a.profileLabel);const auto cut=key.find(" handler failed");if(cut!=std::string::npos)key.resize(cut);
+   auto& b=a.profile[key];++b.calls;b.ms+=ms;b.worst=(std::max)(b.worst,ms);
    const int used=a.budgetGiven-a.instructions;if(used>0)b.instructions+=uint64_t(used);
    a.peakBytes=(std::max)(a.peakBytes,a.bytes);a.gameCalls+=a.nativeCalls.size();}
  }
@@ -1609,7 +1611,7 @@ private:
  }
  void failure(Addon& a,const char* fallback){
   const char* detail=lua_type(a.state,-1)==LUA_TSTRING?lua_tostring(a.state,-1):nullptr;
-  a.error=detail?detail:fallback;lastFailure=a.id+": "+a.error;
+  a.error=detail?detail:fallback;lastFailure=a.id+": "+a.error;++a.failures;
   // One line a modder can act on: where it failed, what Lua said (with its traceback), and how to recover.
   const std::string line=std::string(fallback)+": "+a.error+(a.loading?"":"\nThe addon is now disabled; fix it, return to the title menu and write its ID to reload.request.");
   report(a.id.c_str(),"error",line.c_str());

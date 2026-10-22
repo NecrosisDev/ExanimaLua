@@ -55,7 +55,8 @@ static bool install(){
  static const uintptr_t sites[2]={0x15b0fc,0x15b2be};
  static const unsigned char expect[2][9]={{0xf3,0x0f,0x10,0x45,0x90,0xf3,0x0f,0x59,0x05},{0xf3,0x0f,0x10,0x45,0x84,0xf3,0x0f,0x59,0x05}};
  const unsigned char entry[]={0x55,0x48,0x89,0xe5};   // 0x159a60 still the game's own
- if(!gamebridge::operation(base+0x159a60,entry,sizeof entry)){refused=true;return false;}
+ // The game's own entry, or the runtime's own combat-events detour there (combat_bridge.h checked these bytes).
+ if(!combat::impactCreated&&!gamebridge::operation(base+0x159a60,entry,sizeof entry)){refused=true;return false;}
  for(int i=0;i<2;++i)if(!gamebridge::operation(base+sites[i],expect[i],sizeof expect[i])){refused=true;return false;}
  auto* memory=(unsigned char*)VirtualAlloc(nullptr,4096,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);if(!memory){refused=true;return false;}
  for(int i=0;i<2;++i){

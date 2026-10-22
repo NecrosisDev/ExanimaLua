@@ -45,3 +45,12 @@ characters only. Several addons' scales on one character multiply. Everything is
 - Thread: `0x159a60` runs on whichever thread resolves contacts; the stub uses no lock and no game state besides the
   frame.
 - Not observed in game.
+
+## r39b: entry check with the runtime's own combat hook
+
+The install checked that `0x159a60` still starts `55 48 89 e5`. When combat events are on, the runtime's own
+combat bridge has already put its MinHook detour on that entry (after checking the same bytes), so the check failed
+and damage scales were refused ("the damage computation did not match"), on Hellmode and vanilla alike. The bytes at
+`0x159a60`, `0x15b0fc` and `0x15b2be` are identical in Hellmode's Exanima.exe (sha 9a7839d5) and 0.9.5.2g
+(af9033c7), read from both files. The entry check now also accepts the runtime's own detour (`combat::impactCreated`);
+the two mid-function sites keep their exact byte checks. Any other hook on the entry still refuses.

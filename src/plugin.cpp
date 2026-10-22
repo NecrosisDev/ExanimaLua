@@ -189,11 +189,12 @@ static void publish(uint64_t tick){
  char line[240];snprintf(line,sizeof line,"Frame cost over %llu frames: pulse %.2f ms average (%.2f worst), of it Lua %.2f ms (%.2f worst); console overlay %.2f ms",
   (unsigned long long)frames,pulse/double(frames),pulseWorst,lua/double(frames),luaWorst,overlay/double(frames));
  host.report("runtime","info",line);pulse=lua=overlay=pulseWorst=luaWorst=0;frames=0;next=tick+30000;
- // The addon profiler's logs, beside this frame-cost line: profiler/summary.log (appended) and profiler/report.txt.
+ // The addon profiler's files, beside this frame-cost line: profiler/summary.txt (appended) and profiler/report.txt,
+ // named so the in-game console (which tails *.log) does not echo them.
  if(scripting::Host::profiling&&!controlDirectory.empty())try{
   std::string summary(line),report(line);summary+="\r\n";report+="\r\n";host.profileText(summary,report,30.0);
   std::error_code e;const auto folder=controlDirectory/L"profiler";std::filesystem::create_directories(folder,e);
-  const auto log=folder/L"summary.log";if(std::filesystem::exists(log,e)&&std::filesystem::file_size(log,e)>4*1024*1024)std::filesystem::rename(log,folder/L"summary.log.1",e);
+  const auto log=folder/L"summary.txt";if(std::filesystem::exists(log,e)&&std::filesystem::file_size(log,e)>4*1024*1024)std::filesystem::rename(log,folder/L"summary.1.txt",e);
   char stamp[32];const auto t=std::time(nullptr);std::tm tm{};gmtime_s(&tm,&t);std::strftime(stamp,sizeof stamp,"%Y-%m-%d %H:%M:%S UTC",&tm);
   {std::ofstream out(log,std::ios::binary|std::ios::app);out<<"--- "<<stamp<<" ---\r\n"<<summary<<"\r\n";}
   {std::ofstream out(folder/L"report.txt",std::ios::binary|std::ios::trunc);out<<"Exanima Lua runtime profiler, "<<stamp<<"\r\n"<<report;}
