@@ -1,0 +1,12 @@
+[plugin]
+name = "Inventory Tools"
+version = "1.0.0"
+
+[script]
+runtime = "com.necrosis.script-runtime"
+entry = "scripts/main.lua"
+requires = ["inventory.read", "events.lifecycle", "timers"]
+optional = ["world.read", "inventory.transfer", "equipment.write", "weapons.switch", "world.pickup", "world.drop", "weapons.equip", "inventory.bags", "weapons.unequip", "shields.equip", "items.use", "world.use", "world.levers", "world.doors", "world.teleporters", "world.devices"]
+
+[script.modules]
+config = "scripts/config.lua"

@@ -1,0 +1,8 @@
+[plugin]
+name = "Encounter Truce"
+version = "1.0.0"
+
+[script]
+runtime = "com.necrosis.script-runtime"
+entry = "scripts/main.lua"
+requires = ["characters.awareness", "characters.attitude.write", "events.lifecycle", "timers"]

@@ -1,0 +1,9 @@
+[plugin]
+name = "Settings Tour"
+version = "1.0.0"
+
+[script]
+runtime = "com.necrosis.script-runtime"
+entry = "scripts/main.lua"
+requires = ["events.lifecycle", "timers"]
+optional = ["ui.settings", "ui.notify", "ui.sound"]

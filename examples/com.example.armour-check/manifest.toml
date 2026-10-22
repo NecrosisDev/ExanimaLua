@@ -1,0 +1,12 @@
+[plugin]
+name = "Armour Check"
+version = "1.0.0"
+
+[script]
+runtime = "com.necrosis.script-runtime"
+entry = "scripts/main.lua"
+requires = ["inventory.read", "items.stats", "events.lifecycle", "timers"]
+
+[script.modules]
+config = "scripts/config.lua"
+layers = "scripts/layers.lua"

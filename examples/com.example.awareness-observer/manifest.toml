@@ -1,0 +1,8 @@
+[plugin]
+name = "Awareness Observer"
+version = "1.0.0"
+
+[script]
+runtime = "com.necrosis.script-runtime"
+entry = "scripts/main.lua"
+requires = ["characters.awareness", "events.lifecycle", "timers"]

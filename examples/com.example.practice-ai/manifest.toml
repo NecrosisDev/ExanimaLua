@@ -1,0 +1,8 @@
+[plugin]
+name = "Practice AI"
+version = "1.0.0"
+
+[script]
+runtime = "com.necrosis.script-runtime"
+entry = "scripts/main.lua"
+requires = ["characters.read", "characters.ai.write", "events.lifecycle", "timers"]

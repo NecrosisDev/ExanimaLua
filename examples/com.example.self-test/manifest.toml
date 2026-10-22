@@ -1,0 +1,12 @@
+[plugin]
+name = "Runtime Self-Test"
+version = "1.0.0"
+
+[script]
+runtime = "com.necrosis.script-runtime"
+entry = "scripts/main.lua"
+requires = ["events.lifecycle", "timers"]
+optional = ["events.combat", "events.script", "events.zone", "events.messages", "world.read", "characters.read"]
+
+[script.modules]
+config = "scripts/config.lua"

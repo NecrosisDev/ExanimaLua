@@ -1,0 +1,16 @@
+name: build
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and run the owned-process tests
+        run: python -X utf8 -B build.py --out out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ScriptRuntime
+          path: out/mods/com.necrosis.script-runtime

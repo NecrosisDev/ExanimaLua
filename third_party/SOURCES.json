@@ -1,0 +1,14 @@
+{
+  "snapshots_of": {
+    "vendor/minhook": "continuation/vendor/minhook",
+    "saves.h": "continuation/saves.h",
+    "game_structs.h": "continuation/game_structs.h",
+    "game_layout.h": "continuation/game_layout.h",
+    "game_signatures.h": "continuation/game_signatures.h",
+    "npc/npc_live.h": "continuation/npc/npc_live.h",
+    "hotload.h": "continuation/hotload.h",
+    "keyring.lua": "mods/keyring/scripts/main.lua",
+    "LICENSE": "LICENSE"
+  },
+  "runtime": "0.28.0"
+}

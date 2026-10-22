@@ -1,0 +1,411 @@
+diff --git a/emtk_framework/src/lib.rs b/emtk_framework/src/lib.rs
+index 065f342..0967919 100644
+--- a/emtk_framework/src/lib.rs
++++ b/emtk_framework/src/lib.rs
+@@ -126,7 +126,7 @@ unsafe extern "C" fn main() {
+ 	file.read_to_string(&mut buffer)
+ 		.map_err(|e| error!("{}", e))
+ 		.expect("load order contents must be valid UTF-8");
+-	let load_order: Vec<_> = toml::from_str::<profile::LoadOrder>(&buffer)
++	let mut load_order: Vec<_> = toml::from_str::<profile::LoadOrder>(&buffer)
+ 		.expect("load order contents must be valid toml and structure")
+ 		.into_iter()
+ 		.filter(|(id, entry)| {
+@@ -148,6 +148,9 @@ unsafe extern "C" fn main() {
+ 			true
+ 		})
+ 		.collect();
++	// Use the profile's priority order for both asset precedence and native startup.
++	load_order.sort_by(|(a_id, a), (b_id, b)|
++		a.priority.cmp(&b.priority).then_with(|| a_id.to_string().cmp(&b_id.to_string())));
+ 
+ 	let native_packages: Vec<_> = cwd
+ 		.read_dir()
+@@ -202,23 +205,10 @@ unsafe extern "C" fn main() {
+ 		}
+ 	};
+ 
+-	// TODO: port plugin configs to emtk_core::plugin::Manifest
+-	// gui::inject_gui();
+-
+-	// let plugin_configs = match read_plugin_configs() {
+-	// 	Ok(configs) => configs,
+-	// 	Err(e) => {
+-	// 		error!("Failed to load plugin configs: {:?}", e);
+-	// 		return;
+-	// 	}
+-	// };
+-
+-	// for config in plugin_configs {
+-	// 	let result = plugins::load_plugin(config);
+-	// 	if let Err(e) = result {
+-	// 		error!("Failed to load plugin: {:?}", e);
+-	// 	}
+-	// }
++	// Assets and native logic follow the same validated, enabled profile entries.
++	// This executes outside DllMain, before the original game entry point.
++	let game_dir = internal::utils::get_game_dir();
++	plugins::load_profile_plugins(&game_dir, LOAD_ORDER.get().unwrap());
+ 
+ 	info!("Running Original Program Entrypoint");
+ 
+diff --git a/emtk_framework/src/plugins/manager.rs b/emtk_framework/src/plugins/manager.rs
+index 77d4e6f..1e599b5 100644
+--- a/emtk_framework/src/plugins/manager.rs
++++ b/emtk_framework/src/plugins/manager.rs
+@@ -84,8 +84,8 @@ impl PluginState {
+ 				enabled: false,
+ 				info,
+ 				lib,
+-				enable: enable.expect("Plugin does not have an enable function"),
+-				disable: disable.expect("Plugin does not have a disable function"),
++				enable: enable.ok_or_else(|| anyhow::anyhow!("Plugin does not have an enable function"))?,
++				disable: disable.ok_or_else(|| anyhow::anyhow!("Plugin does not have a disable function"))?,
+ 
+ 				send_message,
+ 
+diff --git a/emtk_framework/src/plugins/mod.rs b/emtk_framework/src/plugins/mod.rs
+index 6cb88b2..a598ed4 100644
+--- a/emtk_framework/src/plugins/mod.rs
++++ b/emtk_framework/src/plugins/mod.rs
+@@ -1,7 +1,9 @@
+ pub(crate) mod manager;
+ mod parser;
++#[cfg(test)]
++mod startup_tests;
+ 
+-use std::{path::PathBuf, result::Result::Ok};
++use std::{path::{Path, PathBuf}, result::Result::Ok};
+ 
+ use anyhow::*;
+ use emtk_framework_types::config;
+@@ -10,6 +12,152 @@ use tracing::{error, info};
+ 
+ use crate::internal::utils::get_game_dir;
+ 
++/// Load native logic only for mods enabled in the current profile, in its order.
++/// A missing config means an asset-only mod. A failed native mod does not prevent
++/// the next mod, or the game entry point, from running.
++pub fn load_profile_plugins(game_dir: &Path, order: &[(emtk_core::plugin::Id, emtk_core::profile::LoadOrderEntry)]) {
++	for (id, entry) in order {
++		if !entry.enabled { continue; }
++		if let Err(e) = load_profile_plugin(game_dir, id) {
++			error!("Native startup failed for {}: {:#}", id, e);
++		}
++	}
++    register_reload_providers(game_dir,order);
++	// Script runtimes are native providers; load them before any script addon.
++	for (id, entry) in order {
++		if !entry.enabled { continue; }
++		if let Err(e) = load_profile_script(game_dir, id, order) {
++			error!("Script startup failed for {}: {:#}", id, e);
++		}
++	}
++}
++
++type ProfileOrder=Vec<(emtk_core::plugin::Id,emtk_core::profile::LoadOrderEntry)>;
++struct ReloadProfile {directory:PathBuf,order:ProfileOrder}
++static RELOAD_PROFILES:std::sync::LazyLock<std::sync::RwLock<std::collections::HashMap<String,std::sync::Arc<ReloadProfile>>>>=
++    std::sync::LazyLock::new(||std::sync::RwLock::new(std::collections::HashMap::new()));
++type ReloadCallback=unsafe extern "C" fn(*const std::ffi::c_char,*const std::ffi::c_char)->bool;
++unsafe extern "C" fn reload_scripts(runtime:*const std::ffi::c_char,requested:*const std::ffi::c_char)->bool {
++    std::panic::catch_unwind(||{
++        if runtime.is_null()||requested.is_null(){return false;}
++        let runtime=unsafe{std::ffi::CStr::from_ptr(runtime)}.to_string_lossy();
++        let requested=unsafe{std::ffi::CStr::from_ptr(requested)}.to_string_lossy();
++        let profile={let profiles=RELOAD_PROFILES.read().unwrap();profiles.get(runtime.as_ref()).cloned()};
++        let Some(profile)=profile else{return false;};let mut found=false;let mut success=true;
++        for(id,entry)in &profile.order {
++            if !entry.enabled||(requested!="all"&&requested!=id.to_string()){continue;}
++            let manifest=profile.directory.join(id.plugin_dir()).join("manifest.toml");
++            let parsed=std::fs::read_to_string(manifest).ok().and_then(|text|toml::from_str::<ScriptManifest>(&text).ok());
++            let Some(ScriptManifest{script:Some(script)})=parsed else{continue;};
++            if script.runtime!=runtime{continue;}found=true;
++            if let Err(error)=load_profile_script_for(&profile.directory,id,&profile.order,Some(&runtime)){
++                error!("Script reload failed for {}: {:#}",id,error);success=false;
++            }
++        }
++        found&&success
++    }).unwrap_or(false)
++}
++fn register_reload_providers(game_dir:&Path,order:&[(emtk_core::plugin::Id,emtk_core::profile::LoadOrderEntry)]){
++    use std::ffi::CString;
++    let profile=std::sync::Arc::new(ReloadProfile{directory:game_dir.to_path_buf(),order:order.to_vec()});
++    for(id,entry)in order {
++        if !entry.enabled{continue;}let Some(state)=manager::PluginManager::get(&id.to_string()) else{continue;};
++        let state=state.read().unwrap();if !state.enabled{continue;}
++        unsafe{
++            let Ok(register)=state.lib.get::<unsafe extern "C" fn(ReloadCallback,*const std::ffi::c_char)->bool>(b"set_script_reload_callback") else{continue;};
++            let name=CString::new(id.to_string()).unwrap();
++            RELOAD_PROFILES.write().unwrap().insert(id.to_string(),profile.clone());
++            if !register(reload_scripts,name.as_ptr()){error!("Runtime declined reload provider: {}",id);}
++        }
++    }
++}
++
++#[derive(serde::Deserialize)]
++struct ScriptManifest { script: Option<ScriptEntry> }
++#[derive(serde::Deserialize)]
++struct ScriptEntry {
++    runtime: String, entry: String,
++    #[serde(default)] requires: Vec<String>,
++    #[serde(default)] optional: Vec<String>,
++    #[serde(default)] modules: std::collections::BTreeMap<String, String>,
++}
++#[repr(C)]
++struct ScriptModule { name: *const std::ffi::c_char, source: *const u8, size: usize }
++fn valid_module_name(name: &str) -> bool {
++    !name.is_empty() && name.len() <= 128 && !name.starts_with('.') && !name.ends_with('.') &&
++    !name.contains("..") && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'.')
++}
++fn read_script_file(directory: &Path, relative: &str, remaining: usize) -> Result<Vec<u8>> {
++    use std::io::Read;
++    let path=directory.join(relative).canonicalize()?;
++    ensure!(path.starts_with(directory) && path.is_file(), "Script file is outside its addon");
++    let mut source=Vec::new();
++    std::fs::File::open(path)?.take(remaining as u64+1).read_to_end(&mut source)?;
++    ensure!(source.len()<=remaining,"Script bundle exceeds 1 MiB");Ok(source)
++}
++
++fn load_profile_script(game_dir: &Path, id: &emtk_core::plugin::Id,
++    order: &[(emtk_core::plugin::Id, emtk_core::profile::LoadOrderEntry)]) -> Result<()> {
++    load_profile_script_for(game_dir,id,order,None)
++}
++fn load_profile_script_for(game_dir: &Path,id: &emtk_core::plugin::Id,
++    order: &[(emtk_core::plugin::Id,emtk_core::profile::LoadOrderEntry)],expected:Option<&str>)->Result<()> {
++    use std::ffi::CString;
++    let directory = game_dir.join(id.plugin_dir()).canonicalize()?;
++    let manifest = directory.join("manifest.toml");
++    if !manifest.is_file() { return Ok(()); }
++    let parsed: ScriptManifest = toml::from_str(&std::fs::read_to_string(manifest)?)?;
++    let Some(script) = parsed.script else { return Ok(()); };
++    ensure!(expected.is_none_or(|name|name==script.runtime),"Reload cannot change script runtime");
++    let runtime = emtk_core::plugin::Id::try_from(script.runtime.as_str())?;
++    ensure!(order.iter().any(|(id, entry)| id == &runtime && entry.enabled), "Required script runtime is not enabled: {}", runtime);
++    let root = game_dir.join(emtk_core::Instance::MODS_DIR).canonicalize()?;
++    ensure!(directory.starts_with(root), "Script addon directory is outside mods");
++    ensure!(script.modules.len()<=64,"Too many Lua modules");
++    let source=read_script_file(&directory,&script.entry,1024*1024)?;
++    let mut remaining=1024*1024-source.len();
++    let mut modules=Vec::new();
++    for (name,path) in &script.modules {
++        ensure!(valid_module_name(name),"Invalid Lua module name: {}",name);
++        let bytes=read_script_file(&directory,path,remaining)?;remaining-=bytes.len();
++        modules.push((CString::new(name.as_str())?,bytes));
++    }
++    ensure!(script.requires.iter().chain(script.optional.iter()).all(|name| !name.contains(',')), "Capability names cannot contain commas");
++    let required = CString::new(script.requires.join(","))?;
++    let optional = CString::new(script.optional.join(","))?;
++    let addon = CString::new(id.to_string())?;
++    let state = manager::PluginManager::get(&runtime.to_string()).ok_or_else(|| anyhow!("Script runtime was not loaded"))?;
++    let state = state.read().unwrap();
++    ensure!(state.enabled, "Script runtime declined activation");
++    unsafe {
++        let loaded=if modules.is_empty() && script.optional.is_empty() {
++            let load=state.lib.get::<unsafe extern "C" fn(*const std::ffi::c_char,*const u8,usize,*const std::ffi::c_char)->bool>(b"load_script_addon")?;
++            load(addon.as_ptr(),source.as_ptr(),source.len(),required.as_ptr())
++        }else{
++            let bundle:Vec<ScriptModule>=modules.iter().map(|(name,bytes)|ScriptModule{name:name.as_ptr(),source:bytes.as_ptr(),size:bytes.len()}).collect();
++            let load=state.lib.get::<unsafe extern "C" fn(*const std::ffi::c_char,*const u8,usize,*const std::ffi::c_char,*const std::ffi::c_char,*const ScriptModule,usize)->bool>(b"load_script_addon_v2")
++                .context("Runtime does not support declared Lua modules")?;
++            load(addon.as_ptr(),source.as_ptr(),source.len(),required.as_ptr(),optional.as_ptr(),bundle.as_ptr(),bundle.len())
++        };
++        ensure!(loaded,"Script runtime declined addon {} (see its diagnostics log)",id);
++    }
++    info!("Script addon accepted by runtime (may be pending): {}", id);
++    Ok(())
++}
++
++fn load_profile_plugin(game_dir: &Path, id: &emtk_core::plugin::Id) -> Result<()> {
++	let directory = game_dir.join(id.plugin_dir());
++	let config_path = directory.join("config.toml");
++	if !config_path.exists() { return Ok(()); }
++	let root = game_dir.join(emtk_core::Instance::MODS_DIR).canonicalize()?;
++	let directory = directory.canonicalize()?;
++	ensure!(directory.starts_with(root), "Plugin folder is outside mods");
++	let config = parser::parse_plugin_config(&std::fs::read_to_string(config_path)?)?;
++	ensure!(config.plugin.id.eq_ignore_ascii_case(&id.to_string()), "Config ID differs from the enabled profile entry");
++	if !config.plugin.enabled || config.plugin.executable.is_none() { return Ok(()); }
++	load_plugin(config::PluginInfo { config, path: directory.to_string_lossy().into_owned() })
++}
++
+ pub fn load_plugin(info: config::PluginInfo) -> Result<()> {
+ 	info!(
+ 		"Loading Plugin: {} ({})",
+@@ -24,7 +172,7 @@ pub fn load_plugin(info: config::PluginInfo) -> Result<()> {
+ 	unsafe {
+ 		let executable = info.config.plugin.executable.as_ref().unwrap();
+ 		let dll_path = PathBuf::from(&info.path).join(executable);
+-		let dll_path = dll_path.clean();
++		let dll_path = dll_path.clean().canonicalize()?;
+ 
+ 		// Security: Make sure the dll path is in the current mod folder.
+ 		if !dll_path.starts_with(&info.path) {
+@@ -38,8 +186,11 @@ pub fn load_plugin(info: config::PluginInfo) -> Result<()> {
+ 
+ 		if let Some(state) = state {
+ 			if info.config.plugin.enabled {
+-				let reader = state.read().unwrap();
+-				(reader.enable)();
++				let mut writer = state.write().unwrap();
++				writer.loaded = true;
++				writer.enabled = (writer.enable)();
++				ensure!(writer.enabled, "Plugin enable() declined activation");
++				info!("Native plugin enabled: {}", info.config.plugin.id);
+ 			}
+ 
+ 			Ok(())
+diff --git a/emtk_framework/src/plugins/startup_tests.rs b/emtk_framework/src/plugins/startup_tests.rs
+new file mode 100644
+index 0000000..4561839
+--- /dev/null
++++ b/emtk_framework/src/plugins/startup_tests.rs
+@@ -0,0 +1,148 @@
++use super::*;
++use manager::PluginManager;
++
++fn fixture(root: &Path, id: &str, dll: Option<&Path>, enabled: bool, executable: Option<&Path>) {
++    let dir = root.join("mods").join(id);
++    std::fs::create_dir_all(&dir).unwrap();
++    std::fs::write(dir.join("manifest.toml"), "[plugin]\nname='Native fixture'\nversion='1'\n").unwrap();
++    if let Some(dll) = dll { std::fs::copy(dll, dir.join("fixture.dll")).unwrap(); }
++    let executable = executable.map(|p| format!("executable = {:?}\n", p.to_string_lossy().replace('\\', "/"))).unwrap_or_default();
++    std::fs::write(dir.join("config.toml"), format!(
++        "[plugin]\nid = {id:?}\nname = 'Startup fixture'\nversion = '1'\nsupported_versions = []\nurl = ''\nenabled = {enabled}\n{executable}[plugin.author]\nname = 'Fixture'\n"
++    )).unwrap();
++}
++
++fn entry(id: &str, enabled: bool) -> (emtk_core::plugin::Id, emtk_core::profile::LoadOrderEntry) {
++    (id.try_into().unwrap(), emtk_core::profile::LoadOrderEntry { enabled, priority: 0, ..Default::default() })
++}
++
++#[test]
++#[ignore = "Requires compiled owned fixture DLLs through EMTK_TEST_* environment variables"]
++fn profile_startup() {
++    let good = PathBuf::from(std::env::var_os("EMTK_TEST_PLUGIN_DLL").unwrap());
++    let missing = PathBuf::from(std::env::var_os("EMTK_TEST_MISSING_EXPORT_DLL").unwrap());
++    let decline = PathBuf::from(std::env::var_os("EMTK_TEST_DECLINE_DLL").unwrap());
++    let keyring = PathBuf::from(std::env::var_os("EMTK_TEST_KEYRING_DLL").unwrap());
++    let root = std::env::temp_dir().join(format!("emtk-startup-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
++    let local = Some(Path::new("fixture.dll"));
++    fixture(&root, "test.enabled", Some(&good), true, local);
++    fixture(&root, "test.profile-disabled", Some(&good), true, local);
++    fixture(&root, "test.config-disabled", Some(&good), false, local);
++    fixture(&root, "test.missing-export", Some(&missing), true, local);
++    fixture(&root, "test.declined", Some(&decline), true, local);
++    fixture(&root, "test.asset-only", None, true, None);
++    fixture(&root, "test.escape", None, true, Some(&good));
++    fixture(&root, "test.after-failure", Some(&good), true, local);
++    fixture(&root, "test.actual-native", Some(&keyring), true, local);
++    let order = vec![entry("test.profile-disabled", false), entry("test.config-disabled", true),
++        entry("test.missing-export", true), entry("test.declined", true), entry("test.escape", true),
++        entry("test.asset-only", true), entry("test.enabled", true), entry("test.after-failure", true),
++        entry("test.actual-native", true)];
++    load_profile_plugins(&root, &order);
++    for id in ["test.profile-disabled", "test.config-disabled", "test.missing-export", "test.escape", "test.asset-only"] {
++        assert!(PluginManager::get(id).is_none(), "Unexpected native load: {id}");
++    }
++    for id in ["test.enabled", "test.after-failure"] {
++        let state = PluginManager::get(id).unwrap();
++        let state = state.read().unwrap();
++        assert!(state.loaded && state.enabled);
++        unsafe {
++            let count = state.lib.get::<unsafe extern "C" fn() -> u32>(b"enable_count").unwrap();
++            assert_eq!(count(), 1);
++        }
++    }
++    for id in ["test.declined"] {
++        let state = PluginManager::get(id).unwrap();
++        let state = state.read().unwrap();
++        assert!(state.loaded && !state.enabled, "Unsupported host must be declined: {id}");
++    }
++    // The real Lua runtime can execute core Lua without exposing unavailable game APIs.
++    {
++        let state=PluginManager::get("test.actual-native").unwrap();
++        let state=state.read().unwrap();assert!(state.loaded && state.enabled);
++        unsafe {
++            let load=state.lib.get::<unsafe extern "C" fn(*const std::ffi::c_char,*const u8,usize,*const std::ffi::c_char)->bool>(b"load_script_addon").unwrap();
++            let id=std::ffi::CString::new("test.real-lua").unwrap();
++            let empty=std::ffi::CString::new("").unwrap();
++            let unavailable=std::ffi::CString::new("doors.unlock").unwrap();
++            let source=b"assert(api.version == 1 and io == nil)";
++            assert!(load(id.as_ptr(),source.as_ptr(),source.len(),empty.as_ptr()));
++            assert!(!load(id.as_ptr(),source.as_ptr(),source.len(),unavailable.as_ptr()));
++            let settings=std::ffi::CString::new("storage.settings").unwrap();
++            let settings_id=std::ffi::CString::new("test.settings").unwrap();
++            let increment=b"storage.set('count',storage.get('count',0)+1)";
++            assert!(load(settings_id.as_ptr(),increment.as_ptr(),increment.len(),settings.as_ptr()));
++            assert!(load(settings_id.as_ptr(),increment.as_ptr(),increment.len(),settings.as_ptr()));
++            let rejected=b"storage.set('count',999);error('settings rollback')";
++            assert!(!load(settings_id.as_ptr(),rejected.as_ptr(),rejected.len(),settings.as_ptr()));
++            let storage=PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("ExanimaLua/settings");
++            let mut current=None;let mut previous=None;
++            for first in std::fs::read_dir(storage).unwrap(){for second in std::fs::read_dir(first.unwrap().path()).unwrap(){
++                let directory=second.unwrap().path();
++                if directory.join("settings.json").is_file(){current=Some(std::fs::read_to_string(directory.join("settings.json")).unwrap());previous=Some(std::fs::read_to_string(directory.join("settings.previous.json")).unwrap());}
++            }}
++            assert!(current.unwrap().contains("\"count\":2"));assert!(previous.unwrap().contains("\"count\":1"));
++
++        }
++    }
++    // Profile scripts run only after their enabled native runtime is available.
++    fixture(&root, "test.lua-runtime", Some(&good), true, local);
++    for id in ["test.script-good", "test.script-disabled", "test.script-escape", "test.script-missing-runtime"] {
++        let directory=root.join("mods").join(id);
++        std::fs::create_dir_all(&directory).unwrap();
++        std::fs::write(directory.join("main.lua"), "-- startup fixture\nreturn true").unwrap();
++        let runtime=if id=="test.script-missing-runtime" {"test.unavailable"} else {"test.lua-runtime"};
++        let entry=if id=="test.script-escape" { good.to_string_lossy().replace('\\', "/") } else {"main.lua".to_string()};
++        std::fs::write(directory.join("manifest.toml"),format!("[plugin]\nname='Script'\nversion='1'\n[script]\nruntime={runtime:?}\nentry={entry:?}\nrequires=['events.item_use']\n")).unwrap();
++    }
++    let scripts=vec![entry("test.script-good",true),entry("test.script-disabled",false),entry("test.script-escape",true),
++        entry("test.script-missing-runtime",true),entry("test.lua-runtime",true)];
++    load_profile_plugins(&root,&scripts);
++    let state=PluginManager::get("test.lua-runtime").unwrap();
++    let state=state.read().unwrap();
++    unsafe {
++        let count=state.lib.get::<unsafe extern "C" fn()->u32>(b"script_count").unwrap();
++        assert_eq!(count(),1);
++    }
++    // The real provider consumes the declared module bundle, not a fixture stub.
++    let directory=root.join("mods/test.real-modules");std::fs::create_dir_all(directory.join("scripts")).unwrap();
++    std::fs::write(directory.join("scripts/main.lua"),"assert(require('util').value==42);assert(not api.has_capability('doors.unlock'));log.info('module loaded')").unwrap();
++    std::fs::write(directory.join("scripts/util.lua"),"return {value=42}").unwrap();
++    let manifest="[script]\nruntime='test.actual-native'\nentry='scripts/main.lua'\noptional=['doors.unlock','future.capability']\n[script.modules]\nutil='scripts/util.lua'\n";
++    std::fs::write(directory.join("manifest.toml"),manifest).unwrap();
++    let addon:emtk_core::plugin::Id="test.real-modules".try_into().unwrap();
++    assert!(load_profile_script(&root,&addon,&order).is_ok());
++    std::fs::write(root.join("outside.lua"),"return {value=42}").unwrap();
++    std::fs::write(directory.join("manifest.toml"),manifest.replace("scripts/util.lua","../../outside.lua")).unwrap();
++    assert!(load_profile_script(&root,&addon,&order).is_err());
++    std::fs::write(directory.join("manifest.toml"),manifest.replace("util=","'../bad'=")).unwrap();
++    assert!(load_profile_script(&root,&addon,&order).is_err());
++    std::fs::write(directory.join("manifest.toml"),manifest).unwrap();
++    std::fs::write(directory.join("scripts/util.lua"),vec![b' ';1024*1024]).unwrap();
++    assert!(load_profile_script(&root,&addon,&order).is_err(),"Aggregate source budget must include the entry");
++    let log=root.join("mods/test.actual-native/ScriptRuntime.log");
++    let messages=std::fs::read_to_string(log).unwrap();
++    assert!(messages.contains("Core Lua enabled")&&messages.contains("[test.real-modules]")&&messages.contains("module loaded"));
++    // Reload uses the selected profile and the same confined source loader.
++    let mut reload_order=order.clone();reload_order.push(entry("test.real-modules",true));
++    reload_order.push(entry("test.script-disabled",false));register_reload_providers(&root,&reload_order);
++    std::fs::write(directory.join("manifest.toml"),manifest).unwrap();
++    std::fs::write(directory.join("scripts/main.lua"),"assert(require('util').value==43);log.info('fresh reload')").unwrap();
++    std::fs::write(directory.join("scripts/util.lua"),"return {value=43}").unwrap();
++    let provider=std::ffi::CString::new("test.actual-native").unwrap();
++    let selected=std::ffi::CString::new("test.real-modules").unwrap();
++    let disabled=std::ffi::CString::new("test.script-disabled").unwrap();
++    let unknown=std::ffi::CString::new("test.not-selected").unwrap();
++    unsafe{
++        assert!(reload_scripts(provider.as_ptr(),selected.as_ptr()));
++        assert!(!reload_scripts(provider.as_ptr(),disabled.as_ptr()));
++        assert!(!reload_scripts(provider.as_ptr(),unknown.as_ptr()));
++        std::fs::write(directory.join("scripts/util.lua"),"error('bad reload')").unwrap();
++        assert!(!reload_scripts(provider.as_ptr(),selected.as_ptr()));
++        std::fs::write(directory.join("scripts/util.lua"),"return {value=43}").unwrap();
++        assert!(reload_scripts(provider.as_ptr(),selected.as_ptr()));
++    }
++    let messages=std::fs::read_to_string(root.join("mods/test.actual-native/ScriptRuntime.log")).unwrap();
++    assert!(messages.contains("fresh reload")&&messages.contains("bad reload"));
++    // Keep mapped fixture DLLs until test process exit; Windows cannot delete them now.
++}

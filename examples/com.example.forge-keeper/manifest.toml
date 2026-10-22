@@ -1,0 +1,12 @@
+[plugin]
+name = "Forge Keeper"
+version = "1.0.0"
+
+[script]
+runtime = "com.necrosis.script-runtime"
+entry = "scripts/main.lua"
+requires = ["events.gear_use"]
+optional = ["world.devices", "world.lights", "levels.serve", "ui.notify"]
+
+[script.modules]
+config = "scripts/config.lua"

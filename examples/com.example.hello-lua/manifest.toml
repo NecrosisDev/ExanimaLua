@@ -1,0 +1,11 @@
+[plugin]
+name = "Hello Lua"
+version = "1.0.0"
+
+[script]
+runtime = "com.necrosis.script-runtime"
+entry = "scripts/main.lua"
+optional = ["items.read", "events.lifecycle", "timers", "storage.settings"]
+
+[script.modules]
+"util.format" = "scripts/util/format.lua"

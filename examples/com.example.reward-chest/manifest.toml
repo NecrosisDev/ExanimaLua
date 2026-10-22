@@ -1,0 +1,11 @@
+[plugin]
+name = "Reward Chest"
+version = "1.0.0"
+
+[script]
+runtime = "com.necrosis.script-runtime"
+entry = "scripts/main.lua"
+requires = ["world.read", "containers.edit", "events.lifecycle", "timers"]
+
+[script.modules]
+config = "scripts/config.lua"
