@@ -25,7 +25,7 @@
 namespace scripting {
 enum Capability : uint64_t { events=1, items=2, contents=4, openStorage=8, unlockDoor=16, lifecycleEvents=32, timerEvents=64, settingsStorage=128, worldRead=256, charactersRead=512, awarenessRead=1024, aiWrite=2048, attitudeWrite=4096, containerEdit=8192, inventoryRead=16384, inventoryTransfer=32768, equipmentWrite=65536, weaponSwitch=131072, worldPickup=262144, worldDrop=524288, weaponEquip=1048576, inventoryBags=2097152, weaponUnequip=4194304, shieldEquip=8388608, itemsUse=16777216, worldUse=33554432, worldLevers=67108864, worldDoors=134217728, worldTeleporters=268435456, worldDevices=536870912, worldSpawn=1073741824, combatEvents=2147483648u, worldTime=uint64_t(1)<<32, saveData=uint64_t(1)<<33, scriptEvents=uint64_t(1)<<34, scriptFlags=uint64_t(1)<<35,
  itemStats=uint64_t(1)<<36, zoneEvents=uint64_t(1)<<37, gameMessages=uint64_t(1)<<38, titleRows=uint64_t(1)<<39, levelsServe=uint64_t(1)<<40, playerDamage=uint64_t(1)<<41, playerPush=uint64_t(1)<<42, levelsDrive=uint64_t(1)<<43,
- powerCast=uint64_t(1)<<44, focusHold=uint64_t(1)<<45, worldLights=uint64_t(1)<<46, gearUse=uint64_t(1)<<47, itemsCondition=uint64_t(1)<<48, levelsFlow=uint64_t(1)<<49, assetsRead=uint64_t(1)<<50, playerPlace=uint64_t(1)<<51, uiNotify=uint64_t(1)<<52, modSettings=uint64_t(1)<<53, uiSound=uint64_t(1)<<54, itemsWear=uint64_t(1)<<55, characterPowers=uint64_t(1)<<56 };
+ powerCast=uint64_t(1)<<44, focusHold=uint64_t(1)<<45, worldLights=uint64_t(1)<<46, gearUse=uint64_t(1)<<47, itemsCondition=uint64_t(1)<<48, levelsFlow=uint64_t(1)<<49, assetsRead=uint64_t(1)<<50, playerPlace=uint64_t(1)<<51, uiNotify=uint64_t(1)<<52, modSettings=uint64_t(1)<<53, uiSound=uint64_t(1)<<54, itemsWear=uint64_t(1)<<55, characterPowers=uint64_t(1)<<56, charactersDamage=uint64_t(1)<<57, characterMarks=uint64_t(1)<<58, damageScale=uint64_t(1)<<59 };
 inline constexpr uint64_t itemApiCapabilities=events|items|contents|openStorage|unlockDoor;
 // The runtime's version as addons see it: api.version is the Lua API generation (unchanged while additions stay
 // compatible), api.revision counts additive releases, so `api.revision >= 24` means "0.24.0 or later".
@@ -43,7 +43,7 @@ inline constexpr CapabilityName capabilityNames[]={
  {"items.stats",itemStats},{"events.zone",zoneEvents},{"events.messages",gameMessages},{"title.rows",titleRows},{"levels.serve",levelsServe},
  {"player.damage",playerDamage},{"player.push",playerPush},{"levels.drive",levelsDrive},
  {"powers.cast",powerCast},{"powers.focus",focusHold},{"world.lights",worldLights},{"events.gear_use",gearUse},{"items.condition",itemsCondition},
- {"levels.flow",levelsFlow},{"assets.read",assetsRead},{"player.place",playerPlace},{"ui.notify",uiNotify},{"ui.settings",modSettings},{"ui.sound",uiSound},{"items.wear",itemsWear},{"characters.powers",characterPowers}};
+ {"levels.flow",levelsFlow},{"assets.read",assetsRead},{"player.place",playerPlace},{"ui.notify",uiNotify},{"ui.settings",modSettings},{"ui.sound",uiSound},{"items.wear",itemsWear},{"characters.powers",characterPowers},{"characters.damage",charactersDamage},{"characters.marks",characterMarks},{"characters.damage_scale",damageScale}};
 inline uint64_t capability(const std::string& name){
  for(const auto& known:capabilityNames)if(name==known.name)return known.bit;
  return 0;
@@ -125,7 +125,11 @@ struct GearResult { bool handled=false,restore=false,ignite=false;int wear=-1,di
 struct SettingDef { std::string key,label,type;double minimum=0,maximum=1,step=1;std::vector<std::string> choices;std::string fallback,help; };
 struct SettingChange { std::string key,value; };
 struct IdChange { uint32_t before=0,after=0; };   // item.id_changed
-struct NativeCall { enum Kind { damage, push, drive, travel, place } kind=damage;float values[4]{};bool flag=false;uint32_t record=0,state=0;char name[17]{}; };
+// characters.set_mark: a named value on every live character with a record id (or the player) for other mods.
+struct Mark {bool player=false;uint32_t record=0;char name[32]{};uint32_t value=0;};
+// characters.set_damage_scale: per-kind multipliers on the damage a character takes (1 = unchanged).
+struct DamageScale {bool player=false;uint32_t record=0;float cut=1,pierce=1,crush=1,impact=1;};
+struct NativeCall { enum Kind { damage, push, drive, travel, place, damageCharacter } kind=damage;float values[4]{};bool flag=false;uint32_t record=0,state=0;char name[17]{};uintptr_t target=0; };
 class Host {
 public:
  std::string phaseName="loading";
@@ -195,7 +199,7 @@ private:
   std::vector<Handler> handlers;TimerQueue timers;
   settings::Cache* settingsData=nullptr;std::unique_ptr<settings::Document> staged;
   std::vector<Module> modules;std::vector<bool> importing;int cache=0,logs=0;
-  std::vector<LightSpec> lights;lua_Number focus=0,spend=0;int bindings=0;std::vector<uint32_t> teach;uint32_t schools=0;   // teach: Light powers to make known; schools: open_school bits   // bindings: continuous-power slots this addon holds
+  std::vector<LightSpec> lights;lua_Number focus=0,spend=0,restore=0;int bindings=0;std::vector<uint32_t> teach;std::vector<uint32_t> wheel;std::vector<Mark> marks;std::vector<DamageScale> scales;uint32_t schools=0;   // teach: Light powers to make known; schools: open_school bits   // bindings: continuous-power slots this addon holds
   ~Addon(){if(state)lua_close(state);}
  };
  std::vector<std::unique_ptr<Addon>> addons;
@@ -353,7 +357,7 @@ private:
   if(!a->containerChanges.empty())return luaL_error(L,"NPC and container edits require separate callbacks");
   for(auto& previous:a->aiChanges)if(previous.target==change.target){
    if((previous.ai&&change.ai)||(previous.hostility&&change.hostility)||(previous.concern&&change.concern))return luaL_error(L,"NPC field already edited in this callback");
-   if(change.ai){previous.ai=true;previous.values=change.values;}
+   if(change.ai){previous.ai=true;previous.values=change.values;previous.boostSeconds=change.boostSeconds;previous.owner=change.owner;}
    if(change.hostility){previous.hostility=true;previous.hostilityValue=change.hostilityValue;}
    if(change.concern){previous.concern=true;previous.concernValue=change.concernValue;}
    lua_pushboolean(L,1);return 1;
@@ -378,6 +382,52 @@ private:
   if(!change.hostility&&!change.concern)return luaL_error(L,"set_attitude requires hostility or concern");
   return stageCharacterChange(L,change);
  }
+ // character:damage{health = h, balance = b, can_fall = bool}: the game's own damage applier on this (non-player)
+ // character, staged like player.damage; the runtime re-finds it in this pulse's roster before the call. Each of
+ // health and balance 0..1 (a full pool is about 1).
+ static int damageCharacter(lua_State* L){
+  auto a=context(L);
+  if(uint64_t(lua_tointeger(L,lua_upvalueindex(2)))!=a->execution)return luaL_error(L,"character:damage expired: use the entry from this callback's characters.read()");
+  stageNative(L,charactersDamage,"characters.damage");
+  const int opts=lua_istable(L,2)?2:1;luaL_checktype(L,opts,LUA_TTABLE);
+  auto field=[&](const char* key)->float{lua_getfield(L,opts,key);float v=0;if(!lua_isnil(L,-1)){const double d=luaL_checknumber(L,-1);if(!std::isfinite(d)||d<0||d>1)luaL_error(L,"character:damage %s must be 0..1",key);v=float(d);}lua_pop(L,1);return v;};
+  NativeCall c;c.kind=NativeCall::damageCharacter;c.values[1]=field("health");c.values[0]=field("balance");
+  lua_getfield(L,opts,"can_fall");c.flag=lua_toboolean(L,-1)!=0;lua_pop(L,1);c.target=uintptr_t(lua_tointeger(L,lua_upvalueindex(1)));
+  if(!c.target)return luaL_error(L,"character:damage: no character");
+  a->nativeCalls.push_back(c);lua_pushboolean(L,1);return 1;
+ }
+ // characters.set_mark(target, name, value): target a record_id or "player"; name 1..31 bytes of letters, digits,
+ // _ . -; value 0..255 (0 clears). Held until a level change or the addon unloads; at most 32 per addon.
+ static int setMark(lua_State* L){
+  auto a=context(L);if(!(a->caps&characterMarks)||!(a->owner->available&characterMarks))return luaL_error(L,"characters.marks unavailable");
+  Mark m;if(lua_type(L,1)==LUA_TSTRING){if(std::strcmp(lua_tostring(L,1),"player"))return luaL_error(L,"characters.set_mark target is a record_id or \"player\"");m.player=true;}
+  else{const lua_Integer r=luaL_checkinteger(L,1);if(r<=0||r>0xffffffffLL)return luaL_error(L,"characters.set_mark: bad record_id");m.record=uint32_t(r);}
+  size_t n=0;const char* name=luaL_checklstring(L,2,&n);if(!n||n>31)return luaL_error(L,"characters.set_mark name must be 1..31 bytes");
+  for(size_t i=0;i<n;++i){const char c=name[i];if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='.'||c=='-'))return luaL_error(L,"characters.set_mark name may use letters, digits, _ . - only");}
+  const lua_Integer v=luaL_checkinteger(L,3);if(v<0||v>255)return luaL_error(L,"characters.set_mark value must be 0..255");
+  std::memcpy(m.name,name,n);m.value=uint32_t(v);
+  for(auto it=a->marks.begin();it!=a->marks.end();++it)if(it->player==m.player&&it->record==m.record&&!std::strcmp(it->name,m.name)){
+   if(m.value)*it=m;else a->marks.erase(it);lua_pushboolean(L,1);return 1;}
+  if(!m.value){lua_pushboolean(L,1);return 1;}
+  if(a->marks.size()>=32)return luaL_error(L,"characters.set_mark: at most 32 marks per addon");
+  a->marks.push_back(m);lua_pushboolean(L,1);return 1;
+ }
+ // characters.set_damage_scale(target, {cut, pierce, crush, impact}) or (target, nil): target a record_id or
+ // "player"; each multiplier 0.05..4, missing 1. Applied inside the game's damage computation before armour, so both
+ // health and balance follow and character.hit reports the scaled result. Held until a level change or unload.
+ static int setDamageScale(lua_State* L){
+  auto a=context(L);if(!(a->caps&damageScale)||!(a->owner->available&damageScale))return luaL_error(L,"characters.damage_scale unavailable");
+  DamageScale d;if(lua_type(L,1)==LUA_TSTRING){if(std::strcmp(lua_tostring(L,1),"player"))return luaL_error(L,"characters.set_damage_scale target is a record_id or \"player\"");d.player=true;}
+  else{const lua_Integer r=luaL_checkinteger(L,1);if(r<=0||r>0xffffffffLL)return luaL_error(L,"characters.set_damage_scale: bad record_id");d.record=uint32_t(r);}
+  auto same=[&](const DamageScale& x){return x.player==d.player&&x.record==d.record;};
+  a->scales.erase(std::remove_if(a->scales.begin(),a->scales.end(),same),a->scales.end());
+  if(lua_isnoneornil(L,2)){lua_pushboolean(L,1);return 1;}
+  luaL_checktype(L,2,LUA_TTABLE);
+  for(auto [key,slot]:{std::pair<const char*,float*>{"cut",&d.cut},{"pierce",&d.pierce},{"crush",&d.crush},{"impact",&d.impact}}){
+   lua_getfield(L,2,key);if(!lua_isnil(L,-1)){const double v=luaL_checknumber(L,-1);if(!std::isfinite(v)||v<0.05||v>4)return luaL_error(L,"characters.set_damage_scale %s must be 0.05..4",key);*slot=float(v);}lua_pop(L,1);}
+  if(a->scales.size()>=32)return luaL_error(L,"characters.set_damage_scale: at most 32 targets per addon");
+  a->scales.push_back(d);lua_pushboolean(L,1);return 1;
+ }
  static int changeAi(lua_State* L){
   auto a=context(L);
   if(!(a->caps&aiWrite)||!(a->owner->available&aiWrite)||!a->timerRunning||a->loading||
@@ -386,6 +436,24 @@ private:
   AiChange change;change.target=uint64_t(lua_tointeger(L,lua_upvalueindex(1)));
   const char* fields[]={"skill","attribute2","attribute3"};double* values[]={&change.values.skill,&change.values.attribute2,&change.values.attribute3};
   for(int i=0;i<3;++i){lua_getfield(L,2,fields[i]);if(lua_type(L,-1)!=LUA_TNUMBER)return luaL_error(L,"set_ai requires numeric skill, attribute2 and attribute3");*values[i]=lua_tonumber(L,-1);lua_pop(L,1);}
+  const char* reason="";if(!hot::aiInputOk(change.values,reason))return luaL_error(L,"%s",reason);
+  return stageCharacterChange(L,change);
+ }
+ // row:boost_ai{skill, attribute2, attribute3, seconds}: set_ai's inputs (absolute, as set_ai), held for `seconds`
+ // (0.5..10). The first call for a character saves the AI fields as stored; later calls only move the lapse time.
+ // On lapse, a phase change, the character's death or leaving, or this addon's unload, the saved fields are written
+ // back exactly. A set_ai on a boosted character ends the boost and keeps the set_ai values.
+ static int boostAi(lua_State* L){
+  auto a=context(L);
+  if(!(a->caps&aiWrite)||!(a->owner->available&aiWrite)||!a->timerRunning||a->loading||
+     uint64_t(lua_tointeger(L,lua_upvalueindex(2)))!=a->execution)return luaL_error(L,"NPC edit method expired or unavailable");
+  luaL_checktype(L,1,LUA_TTABLE);luaL_checktype(L,2,LUA_TTABLE);
+  AiChange change;change.target=uint64_t(lua_tointeger(L,lua_upvalueindex(1)));change.owner=a->id;
+  const char* fields[]={"skill","attribute2","attribute3"};double* values[]={&change.values.skill,&change.values.attribute2,&change.values.attribute3};
+  for(int i=0;i<3;++i){lua_getfield(L,2,fields[i]);if(lua_type(L,-1)!=LUA_TNUMBER)return luaL_error(L,"boost_ai requires numeric skill, attribute2 and attribute3 (as set_ai)");*values[i]=lua_tonumber(L,-1);lua_pop(L,1);}
+  lua_getfield(L,2,"seconds");const double seconds=lua_isnumber(L,-1)?lua_tonumber(L,-1):-1;lua_pop(L,1);
+  if(!std::isfinite(seconds)||seconds<0.5||seconds>10)return luaL_error(L,"boost_ai seconds must be 0.5..10");
+  change.boostSeconds=float(seconds);
   const char* reason="";if(!hot::aiInputOk(change.values,reason))return luaL_error(L,"%s",reason);
   return stageCharacterChange(L,change);
  }
@@ -428,7 +496,10 @@ private:
      if(!(a->caps&method.first)||!(a->owner->available&method.first))continue;
      lua_pushinteger(L,lua_Integer(ticket));lua_pushinteger(L,lua_Integer(a->execution));lua_pushcclosure(L,method.first==aiWrite?changeAi:changeAttitude,2);lua_setfield(L,-2,method.second);
     }
+    if(ticket&&(a->caps&aiWrite)&&(a->owner->available&aiWrite)){lua_pushinteger(L,lua_Integer(ticket));lua_pushinteger(L,lua_Integer(a->execution));lua_pushcclosure(L,boostAi,2);lua_setfield(L,-2,"boost_ai");}
    }
+   if((a->caps&charactersDamage)&&(a->owner->available&charactersDamage)&&a->timerRunning&&character.nativeCharacter&&!(character.playerKnown&&character.player)){
+    lua_pushinteger(L,lua_Integer(character.nativeCharacter));lua_pushinteger(L,lua_Integer(a->execution));lua_pushcclosure(L,damageCharacter,2);lua_setfield(L,-2,"damage");}
    if(character.stateKnown){boolean(L,"dead",character.dead);boolean(L,"down",character.down);}
    if(character.stageKnown)number(L,"life_stage",character.lifeStage);
    if(character.poolKnown)boolean(L,"has_health_pool",character.healthPool);
@@ -773,14 +844,25 @@ private:
   if(a->owner->phaseName!="session"){lua_pushboolean(L,0);return 1;}
   a->spend=(std::min)(a->spend+value,lua_Number(0.5));lua_pushboolean(L,1);return 1;
  }
- // powers.teach(power): the controlled character comes to know a Light-school power (id & 0xff00 == 0x500), so the
+ // powers.restore_focus(amount): the player regains 0..0.5 focus at once, up to what the ceiling (less what is held
+ // back) allows. Staged like spend_focus; false outside a session.
+ static int restoreFocus(lua_State* L){
+  auto a=context(L);if(!(a->caps&focusHold)||!(a->owner->available&focusHold))return luaL_error(L,"powers.focus unavailable");
+  if(a->loading)return luaL_error(L,"powers.restore_focus is not available while the addon loads; call it from a timer or event");
+  const lua_Number value=luaL_checknumber(L,1);
+  if(!std::isfinite(value)||value<0||value>0.5)return luaL_error(L,"restore_focus expects an amount from 0 to 0.5");
+  if(a->owner->phaseName!="session"){lua_pushboolean(L,0);return 1;}
+  a->restore=(std::min)(a->restore+value,lua_Number(0.5));lua_pushboolean(L,1);return 1;
+ }
+ // powers.teach(power): the controlled character comes to know a Light- or Body-school power (id & 0xff00 is 0x500
+ // or 0x300, the mod schools the game's dispatch does not handle), so the
  // spell book's Light page opens. Staged for the game thread; a power already known is left as it is (its
  // learning progress is never reset). True when staged; false outside a session.
  static int teachPower(lua_State* L){
   auto a=context(L);if(!(a->caps&powerCast)||!(a->owner->available&powerCast))return luaL_error(L,"powers.cast unavailable");
   if(a->loading)return luaL_error(L,"powers.teach is not available while the addon loads; call it from a timer or event");
   const lua_Integer power=luaL_checkinteger(L,1);
-  if(power<=0||power>0x3ffff||(power&0xff00)!=0x500)return luaL_error(L,"powers.teach takes a Light-school power id (0x..05..)");
+  if(power<=0||power>0x3ffff||((power&0xff00)!=0x500&&(power&0xff00)!=0x300))return luaL_error(L,"powers.teach takes a Light (0x..05..) or Body (0x..03..) power id");
   if(a->owner->phaseName!="session"){lua_pushboolean(L,0);return 1;}
   if(a->teach.size()<8&&std::find(a->teach.begin(),a->teach.end(),uint32_t(power))==a->teach.end())a->teach.push_back(uint32_t(power));
   lua_pushboolean(L,1);return 1;
@@ -792,6 +874,20 @@ private:
   auto a=context(L);if(!(a->caps&powerCast)||!(a->owner->available&powerCast))return luaL_error(L,"powers.cast unavailable");
   const lua_Integer school=luaL_checkinteger(L,1);if(school<1||school>8)return luaL_error(L,"powers.open_school takes a school 1..8");
   a->schools|=1u<<unsigned(school);lua_pushboolean(L,1);return 1;
+ }
+ // powers.wheel(power, "cast" | "fail"): the power wheel reacts as it does to the game's own casts: shown for a
+ // second, and for "cast" the slot holding `power` flashes; "fail" plays the game's ThaumFail01. Staged for the next
+ // session pulse (a pulse after the key press); false outside a session or for another outcome.
+ static int wheelReaction(lua_State* L){
+  auto a=context(L);if(!(a->caps&powerCast)||!(a->owner->available&powerCast))return luaL_error(L,"powers.cast unavailable");
+  if(a->loading)return luaL_error(L,"powers.wheel is not available while the addon loads");
+  const lua_Integer power=luaL_checkinteger(L,1);const std::string outcome=luaL_checkstring(L,2);
+  if(power<=0||power>0x3ffff)return luaL_error(L,"powers.wheel takes a power id");
+  if(outcome!="cast"&&outcome!="fail")return luaL_error(L,"powers.wheel outcome is \"cast\" or \"fail\"");
+  if(a->owner->phaseName!="session"){lua_pushboolean(L,0);return 1;}
+  if(a->wheel.size()<8)a->wheel.push_back(uint32_t(power)|(outcome=="cast"?0x80000000u:0u));
+  if(outcome=="fail"&&a->owner->shared.sound)a->owner->shared.sound("ThaumFail01",1.0f);
+  lua_pushboolean(L,1);return 1;
  }
  static int heldFocus(lua_State* L){
   auto a=context(L);if(!(a->caps&focusHold)||!(a->owner->available&focusHold))return luaL_error(L,"powers.focus unavailable");
@@ -1164,8 +1260,8 @@ private:
   lua_newtable(L);lua_pushcfunction(L,readFlag);lua_setfield(L,-2,"get");lua_pushcfunction(L,writeFlag);lua_setfield(L,-2,"set");lua_setglobal(L,"script_flags");
   lua_newtable(L);lua_pushcfunction(L,snapshotInventory);lua_setfield(L,-2,"snapshot");lua_setglobal(L,"inventory");
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"snapshot");
-  lua_pushboolean(L,1);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"awareness");lua_pushcfunction(L,grantPowers);lua_setfield(L,-2,"grant_powers");lua_setglobal(L,"characters");
-  lua_newtable(L);lua_pushcfunction(L,holdFocus);lua_setfield(L,-2,"hold_focus");lua_pushcfunction(L,spendFocus);lua_setfield(L,-2,"spend_focus");lua_pushcfunction(L,teachPower);lua_setfield(L,-2,"teach");lua_pushcfunction(L,openSchool);lua_setfield(L,-2,"open_school");lua_pushcfunction(L,heldFocus);lua_setfield(L,-2,"held_focus");
+  lua_pushboolean(L,1);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"awareness");lua_pushcfunction(L,grantPowers);lua_setfield(L,-2,"grant_powers");lua_pushcfunction(L,setMark);lua_setfield(L,-2,"set_mark");lua_pushcfunction(L,setDamageScale);lua_setfield(L,-2,"set_damage_scale");lua_setglobal(L,"characters");
+  lua_newtable(L);lua_pushcfunction(L,holdFocus);lua_setfield(L,-2,"hold_focus");lua_pushcfunction(L,spendFocus);lua_setfield(L,-2,"spend_focus");lua_pushcfunction(L,restoreFocus);lua_setfield(L,-2,"restore_focus");lua_pushcfunction(L,teachPower);lua_setfield(L,-2,"teach");lua_pushcfunction(L,openSchool);lua_setfield(L,-2,"open_school");lua_pushcfunction(L,wheelReaction);lua_setfield(L,-2,"wheel");lua_pushcfunction(L,heldFocus);lua_setfield(L,-2,"held_focus");
   lua_pushcfunction(L,readCaster);lua_setfield(L,-2,"caster");lua_pushcfunction(L,holdBindings);lua_setfield(L,-2,"hold_bindings");lua_pushcfunction(L,playGesture);lua_setfield(L,-2,"gesture");lua_setglobal(L,"powers");
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,setLight,1);lua_setfield(L,-2,"set");lua_pushboolean(L,1);lua_pushcclosure(L,setLight,1);lua_setfield(L,-2,"place");lua_pushcfunction(L,removeLight);lua_setfield(L,-2,"remove");
   lua_pushcfunction(L,listLights);lua_setfield(L,-2,"list");lua_setglobal(L,"lights");
@@ -1454,7 +1550,7 @@ public:
  void notifyPhase(const std::string& phase,uint64_t generation,const std::string& only=""){
   if(only.empty())phaseName=phase;
   // A spend asked for in a session that ended is dropped with it.
-  if(only.empty()&&phase!="session")for(auto& a:addons){a->spend=0;a->teach.clear();}
+  if(only.empty()&&phase!="session")for(auto& a:addons){a->spend=0;a->restore=0;a->teach.clear();a->wheel.clear();a->marks.clear();a->scales.clear();}
   if(only.empty())for(auto& a:addons)clearTimers(*a);
   // Placed lights belong to the level that was playing; leaving the session forgets them (follow lights stay).
   if(only.empty()&&phase!="session")for(auto& a:addons)a->lights.erase(std::remove_if(a->lights.begin(),a->lights.end(),[](const LightSpec& l){return l.placed;}),a->lights.end());
@@ -1561,13 +1657,25 @@ public:
   int total=0;for(const auto& a:addons)if(a->enabled&&(a->caps&powerCast)&&(available&powerCast))total+=a->bindings;return (std::min)(total,4);
  }
  uint32_t openSchools()const{uint32_t m=0;for(const auto& a:addons)if(a->enabled&&(a->caps&powerCast)&&(available&powerCast))m|=a->schools;return m;}
+ // Every enabled addon's marks, for the pulse to resolve against the live roster.
+ void collectMarks(std::vector<Mark>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&characterMarks)&&(available&characterMarks))out.insert(out.end(),a->marks.begin(),a->marks.end());}
+ void collectDamageScales(std::vector<DamageScale>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&damageScale)&&(available&damageScale))out.insert(out.end(),a->scales.begin(),a->scales.end());}
+ bool wheelWanted()const{for(const auto& a:addons)if(!a->wheel.empty())return true;return false;}
+ size_t takeWheel(uint32_t* out,size_t room){
+  size_t n=0;for(auto& a:addons){if(a->enabled&&(a->caps&powerCast)&&(available&powerCast))for(uint32_t w:a->wheel)if(n<room)out[n++]=w;a->wheel.clear();}
+  return n;
+ }
  bool teachWanted()const{for(const auto& a:addons)if(!a->teach.empty())return true;return false;}
  // Powers the addons asked to teach since the last call (taken once), at most `room`.
  size_t takeTeach(uint32_t* out,size_t room){
   size_t n=0;for(auto& a:addons){if(a->enabled&&(a->caps&powerCast)&&(available&powerCast))for(uint32_t p:a->teach){bool dup=false;for(size_t i=0;i<n;++i)dup|=out[i]==p;if(!dup&&n<room)out[n++]=p;}a->teach.clear();}
   return n;
  }
- bool spendWanted()const{for(const auto& a:addons)if(a->spend>0)return true;return false;}
+ bool spendWanted()const{for(const auto& a:addons)if(a->spend>0||a->restore>0)return true;return false;}
+ float takeRestore(){
+  lua_Number total=0;for(auto& a:addons){if(a->enabled&&(a->caps&focusHold)&&(available&focusHold))total+=a->restore;a->restore=0;}
+  return float((std::min)(total,lua_Number(0.5)));
+ }
  // Focus the addons asked to spend since the last call (taken once); at most 0.5 in one pulse.
  float takeSpend(){
   lua_Number total=0;for(auto& a:addons){if(a->enabled&&(a->caps&focusHold)&&(available&focusHold))total+=a->spend;a->spend=0;}

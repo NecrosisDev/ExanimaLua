@@ -29,6 +29,19 @@ static bool readAiConstants(hot::AiConstants& k){
   copyWorldMemory(base+0x30a1a0,&k.three,4)&&copyWorldMemory(base+0x30a328,&k.eighth,4)&&
   copyWorldMemory(base+0x30a490,&k.third,8)&&hot::aiConstantsOk(k);
 }
+// Each pulse: boosts that lapsed, whose character left or died, whose addon is gone, or that outlived the session
+// get their saved fields back, only while the same scene is loaded and the character is still that character.
+static void tickBoosts(scripting::Host& owner,const scripting::CharacterSnapshot* roster,bool session,uint64_t now){
+ if(boosts.empty())return;const scripting::CharacterMemory memory{copyWorldMemory};uintptr_t scene=0;copyWorldMemory(base+0x49b300,&scene,8);
+ for(auto it=boosts.begin();it!=boosts.end();){
+  bool alive=false;if(session&&roster&&roster->ready)for(const auto& c:roster->characters)if(c.nativeCharacter==it->target.character)alive=!(c.stateKnown&&c.dead);
+  const bool keep=session&&alive&&now<it->until&&owner.enabled(it->owner);
+  if(keep){++it;continue;}
+  if(scene&&scene==it->scene&&scripting::targetIdentity(memory,base,it->target))
+   for(size_t k=0;k<it->address.size();++k)if(writableAiFloat(it->address[k]))aiWriter(it->address[k],it->saved[k]);
+  it=boosts.erase(it);
+ }
+}
 static void beginAiPulse(const std::string& phase,uint64_t now){
  aiTargets.clear();aiPulseReady=false;
  if(phase!="session"||(!aiWritePossible&&!attitudeWritePossible&&!containerWritePossible&&!inventoryWritePossible)){aiWorld=aiPlayer=aiScene=0;return;}
@@ -62,6 +75,10 @@ static bool writeAiFloat(uintptr_t address,const float& value){
  }__except(EXCEPTION_EXECUTE_HANDLER){return false;}
 }
 static bool(*aiWriter)(uintptr_t,const float&)=writeAiFloat;
+// boost_ai: what a boost saved, to put back exactly (see script_host.h boostAi).
+struct Boost {scripting::AiTarget target;uintptr_t scene=0;std::array<uintptr_t,6> address{};std::array<float,6> saved{};uint64_t until=0;std::string owner;};
+static std::vector<Boost> boosts;
+static Boost* boostOf(uintptr_t character){for(auto& b:boosts)if(b.target.character==character)return &b;return nullptr;}
 static bool commitAi(const std::vector<scripting::AiChange>& changes){
  if(!worldPulse||!aiPulseReady||!mutationsReady()||aiWriteBroken||changes.empty()||changes.size()>8||!gamebridge::backupDone)return false;
  struct Scalar {uintptr_t address=0;float value=0,before=0;bool touched=false;};
@@ -75,6 +92,8 @@ static bool commitAi(const std::vector<scripting::AiChange>& changes){
   for(const auto& candidate:aiTargets)if(candidate.ticket==change.target){target=&candidate;break;}
   if(!target)return false;
   for(const auto& prior:prepared)if(prior.target.character==target->character)return false;
+  // A boost already running on this character only moves its lapse time.
+  if(change.boostSeconds>0&&change.ai&&!change.hostility&&!change.concern)if(auto* b=boostOf(target->character)){b->until=GetTickCount64()+uint64_t(change.boostSeconds*1000.0f);continue;}
   Prepared next;next.target=*target;
   if(!scripting::targetIdentity(memory,base,*target)||(!change.ai&&!change.hostility&&!change.concern))return false;
   if(change.ai){
@@ -118,6 +137,18 @@ static bool commitAi(const std::vector<scripting::AiChange>& changes){
  for(auto& row:prepared){
   for(auto& field:row.fields){field.touched=true;if(!aiWriter(field.address,field.value))return fault();}
   if(row.concern){row.concernTouched=true;if(!callConcern(row.entry,row.concernValue))return fault();}
+ }
+ // Boosts: the AI fields as they were before this write are what comes back; a plain set_ai ends a running boost.
+ for(const auto& change:changes){
+  const scripting::AiTarget* target=nullptr;for(const auto& candidate:aiTargets)if(candidate.ticket==change.target){target=&candidate;break;}
+  if(!target||!change.ai)continue;
+  const Prepared* row=nullptr;for(const auto& p:prepared)if(p.target.character==target->character)row=&p;
+  if(!row||row->fields.size()<hot::aiOffsets.size())continue;
+  if(change.boostSeconds>0){if(boostOf(target->character)||boosts.size()>=32)continue;
+   Boost b;b.target=*target;b.scene=aiScene;b.until=GetTickCount64()+uint64_t(change.boostSeconds*1000.0f);b.owner=change.owner;
+   for(size_t k=0;k<hot::aiOffsets.size();++k){b.address[k]=row->fields[k].address;b.saved[k]=row->fields[k].before;}
+   boosts.push_back(std::move(b));}
+  else boosts.erase(std::remove_if(boosts.begin(),boosts.end(),[&](const Boost& b){return b.target.character==target->character;}),boosts.end());
  }
  invalidateCharacterCopies();return true;
 }

@@ -97,7 +97,10 @@ mean" hint; in `optional` it is logged and ignored.
 | `characters.read` | `characters.snapshot([{details = true}])` | read | 0.7.0 (details 0.24.0) |
 | `characters.awareness` | `characters.awareness()`: AI state per NPC | read | 0.8.0 |
 | `characters.powers` | `characters.grant_powers(record_id, {power ids})` | write | 0.28.0 |
-| `characters.ai.write` | `row:set_ai{skill, attribute2, attribute3}` | write | 0.9.0 |
+| `characters.damage` | `character:damage{health, balance, can_fall}` on `characters.read()` entries | write | 0.28.0 |
+| `characters.damage_scale` | `characters.set_damage_scale(target, {cut, pierce, crush, impact})` | write | 0.28.0 |
+| `characters.marks` | `characters.set_mark(target, name, value)`: a value other mods read with `character_mark_nodes` | write | 0.28.0 |
+| `characters.ai.write` | `row:set_ai{skill, attribute2, attribute3}`, `row:boost_ai{skill, attribute2, attribute3, seconds}` (0.28.0: a set_ai that restores the saved fields exactly when it lapses, on a phase change, death, leaving or unload; later calls only renew it; a set_ai ends it) | write | 0.9.0 |
 | `characters.attitude.write` | `row:set_attitude{hostility, concern}` | write | 0.10.0 |
 | `items.stats` | `items.stats(id)`: weapon and armour numbers | read | 0.24.0 |
 | `inventory.read` | `inventory.snapshot()`: the player's carried, worn and held items | read | 0.12.0 |
@@ -196,13 +199,18 @@ mean" hint; in `optional` it is logged and ignored.
 | `levels.clear_served()` | nothing | stops serving this addon's members |
 | `levels.add_placement(level, item_id, {x, y, z}[, yaw])` | boolean | a loose item (objdb id) added to `level` (a member such as `"exanima01.rfc"`, any case) every time the game reads it, on top of whatever serves that member; position in level cm, yaw in degrees (upright). Declare it while the addon loads, before the level is read. A placement the level already has (same item within 1 cm) is not doubled. Like any level edit it shows in levels the game generates fresh, not in a saved game's copy. 64 per addon; needs `levels.serve`. Use this instead of shipping a whole level file, which replaces other mods' changes and the installed game's own level |
 | `powers.hold_focus(amount)` | true | hold back 0..0.5 of the player's focus ceiling; 0 gives it back; not while loading |
+| `characters.set_damage_scale(target, scales)` | true | target a `record_id` (every live character with it) or `"player"`; `scales` `{cut, pierce, crush, impact}`, each 0.05..4, missing 1; `nil` clears. Applied inside the game's damage computation to each kind **before armour** (impact is the blunt energy every hit carries), so health and balance both follow and `character.hit` reports the result; several addons multiply; held until a level change or unload (0.28.0) |
+| `characters.set_mark(target, name, value)` | true | target a `record_id` (every live character with it) or `"player"`; name 1..31 bytes of letters, digits, `_ . -` (prefix it with your addon's name); value 0..255, 0 clears; held until a level change or the addon unloads; at most 32 per addon (0.28.0) |
+| `powers.restore_focus(amount)` | boolean | the player regains 0..0.5 focus at once, up to the ceiling less what is held back; false outside a session; not while loading |
+| `character:damage{health = h, balance = b, can_fall = c}` | true | on a `characters.read()` entry (not the player) from this callback: the game's own damage applier on that character (each 0..1; a full pool is about 1); staged, run after the callback only if the character is still in the roster and alive; needs `characters.damage` (0.28.0) |
 | `powers.spend_focus(amount)` | boolean | the player pays 0..0.5 focus once, as a cast does (drained over a few ticks, recovery paused); false outside a session; not while loading |
 | `powers.held_focus()` | number | what this addon asked for last |
 | `powers.caster()` | `{focus, focus_ceiling, focus_reserve, bindings, bindings_used, last_power, techniques}` or nil | the player's thaumaturgy state; needs `powers.cast`; see Powers and lights. `last_power` is the last instant power cast (any school, 0 after a sustained or continuous one), the value Iteration compares; a Light cast the runtime takes records itself there too |
 | `powers.gesture(kind)` | boolean | the player plays a cast motion and no power fires: `"channel"` (the push motion 0x22) or `"thrust"` (Shock's 0x27); next pulse, only while standing with no action running; it ends after about 1.2 s, or at once when the player attacks or guards; false when one is already waiting |
 | `powers.hold_bindings(n)` | true | this addon's held powers use `n` (0..4) of the player's Continuity bindings, so the game's own continuous powers see that many fewer; `powers.caster().bindings` still reports the full count; needs `powers.cast` |
+| `powers.wheel(power, outcome)` | boolean | the power wheel reacts as to the game's own casts: `"cast"` keeps it shown a second and flashes the slot holding `power`; `"fail"` shows it and plays ThaumFail01; a pulse after the key press; false outside a session; needs `powers.cast` (0.28.0) |
 | `powers.open_school(school)` | true | the spell-book school wheel lets that school (1..8, Light is 5) be picked even before the character knows one of its powers, including at character creation; call while loading; needs `powers.cast` (0.28.0) |
-| `powers.teach(power)` | boolean | the player's character comes to know a Light-school power (`power & 0xff00 == 0x500`), so the spell book's Light page opens; a power already known keeps its progress; saved with the character; false outside a session; needs `powers.cast` (0.28.0) |
+| `powers.teach(power)` | boolean | the player's character comes to know a Light (`0x500`) or Body (`0x300`) school power (`power & 0xff00`), so the spell book's Light page opens; a power already known keeps its progress; saved with the character; false outside a session; needs `powers.cast` (0.28.0) |
 | `lights.set(name, spec)` | true | keep a point light near the player's head; see Powers and lights; not while loading |
 | `lights.place(name, spec)` | true | a point light standing at `spec.position` until the level ends; see Powers and lights |
 | `lights.remove(name)` | boolean | true when this addon had that light |
@@ -504,6 +512,8 @@ button, 4 key binding, 5 text).
 | `int settings_tab_host_rows(int tab, int page, Row* out, int capacity)` | the rows to draw now; pointers stay valid until the next call |
 | `void settings_tab_host_change(...)` | forwards a widget change, with `change`'s arguments after `tab` |
 | `void settings_tab_host_event(int tab, int event)` | tab -1 for all tabs |
+| `uint32_t character_marks_version()` | 1 (0.28.0) |
+| `int character_mark_nodes(const char* name, uintptr_t* nodes, uint32_t* values, int capacity)` | each live character marked `name` (characters.set_mark): its scene node (character `+0x18`) and value; returns how many; any thread, no lock, no game memory read, no allocation; refreshed at each pulse, so a node may be stale by one pulse (compare pointers only) |
 | `int mod_settings_help(int id, wchar_t* out, int capacity)` | the help text of a Mod Settings row (the `id` from its rows), for a tooltip; returns its length, 0 when none; copies at most `capacity - 1` units and a terminator (0.28.0) |
 
 `activate` runs on the game's main thread inside the menu's activate; set a

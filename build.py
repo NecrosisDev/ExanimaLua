@@ -120,7 +120,7 @@ def main():
     if result.returncode:raise SystemExit(result.returncode)
     mod=out/'mods'/ID;mod.mkdir(parents=True)
     shutil.copyfile(stage/'ScriptRuntime.dll',mod/'ScriptRuntime.dll')
-    (mod/'manifest.toml').write_text('[plugin]\nname = "Exanima Lua Runtime"\nversion = "'+VERSION+'"\n')
+    (mod/'manifest.toml').write_text('[plugin]\nname = "Exanima Lua Runtime"\nversion = "'+VERSION+'"\ncategory = "Utility"\n')
     (mod/'config.toml').write_text('[plugin]\nid = "'+ID+'"\nname = "Exanima Lua Runtime"\nversion = "'+VERSION+'"\nsupported_versions = []\nurl = ""\nenabled = true\nexecutable = "ScriptRuntime.dll"\n[plugin.author]\nname = "NecrosisDev"\n')
     (mod/'source').mkdir()
     for file in source_files:shutil.copyfile(stage/file.name,mod/'source'/file.name)

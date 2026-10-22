@@ -91,6 +91,12 @@ static bool commit(const scripting::NativeCall& call){
    const auto p=livePlayer();if(!placePossible||!p||!standing(p)||placeJob.busy.exchange(true))return false;
    std::memcpy(placeJob.at,call.values,12);if(!enqueue(runPlace)){placeJob.busy=false;return false;}return true;}
   case scripting::NativeCall::damage:{const auto p=livePlayer();return damage&&p&&callDamage(p,call.values[0],call.values[1],call.flag);}
+  // characters.damage: only a character in this pulse's roster that is not the player and not dead.
+  case scripting::NativeCall::damageCharacter:{
+   if(!damage||!worldPulse||!call.target)return false;const auto roster=captureCharacters();if(!roster||!roster->ready)return false;
+   for(const auto& c:roster->characters)if(c.nativeCharacter==call.target){
+    if((c.playerKnown&&c.player)||(c.stateKnown&&c.dead))return false;return callDamage(call.target,call.values[0],call.values[1],call.flag);}
+   return false;}
   case scripting::NativeCall::push:{const auto p=livePlayer();return push&&p&&callPush(p,call.values,call.values[3]);}
   case scripting::NativeCall::drive:{uintptr_t world=0;if(!drive||!worldPulse||!copyWorldMemory(base+0x4f0bd0,&world,8)||!world)return false;return callDrive(world+0x220,call.record,call.state);}
   default:break;

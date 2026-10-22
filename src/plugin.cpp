@@ -79,6 +79,7 @@ static bool editMember(const char* name,std::string& bytes){bool changed=false;i
 #include "dialog_bridge.h"
 #include "new_game_bridge.h"
 #include "settings_tabs.h"
+#include "damage_scale_bridge.h"
 #include "mod_settings.h"
 #include "sound_bridge.h"
 // An addon's shared registrations end together (unload, error, disable): rows and served members, then placements.
@@ -89,7 +90,7 @@ static bool addPlacement(const std::string& owner,const std::string& level,uint3
  if(!placements::add(p))return false;memberreads::edit=editMember;memberreads::wants=editWants;return true;
 }
 static uint64_t sharedCapabilities(){return scripting::modSettings|(npcpowers::possible&&charactersPossible?scripting::characterPowers:0)|(sounds::possible&&worldPossible?scripting::uiSound:0)|(titlerows::ready?scripting::titleRows:0)|(memberreads::ready?scripting::levelsServe:0)|
- (worldPossible&&charactersPossible&&nativecalls::damagePossible?scripting::playerDamage:0)|(worldPossible&&charactersPossible&&nativecalls::pushPossible?scripting::playerPush:0)|
+ (worldPossible&&charactersPossible&&nativecalls::damagePossible?scripting::playerDamage|scripting::charactersDamage:0)|(worldPossible&&charactersPossible?scripting::characterMarks|scripting::damageScale:0)|(worldPossible&&charactersPossible&&nativecalls::pushPossible?scripting::playerPush:0)|
  (worldPossible&&nativecalls::drivePossible?scripting::levelsDrive:0)|(gear::installed&&itemstats::lookup?scripting::gearUse:0)|(gear::restorePossible?scripting::itemsCondition|scripting::itemsWear:0)|
  scripting::uiNotify|(newgame::possible&&titlerows::ready&&nativecalls::travelPossible?scripting::levelsFlow:0)|(worldPossible&&nativecalls::placePossible?scripting::playerPlace:0)|(!sharedlua::modsDirectory.empty()?scripting::assetsRead:0);}
 static bool worldMutationsIdle(){return worldemitters::idle()&&worlddevices::idle();}
@@ -150,7 +151,7 @@ static bool activateItems(){
  if(!inventorybridge::possible||!gear::install())host.report("runtime","warn","gear.use unavailable: use gate guard or hook failed");
  else{gear::restoreAvailable();host.report("runtime","info",gear::restorePossible?"gear.use ready (with restore_condition)":"gear.use ready (restore_condition unavailable: job list functions did not match)");}
  if(!powers::install())host.report("runtime","warn","Power casts unavailable: cast dispatcher guard or hook failed");
- else host.report("runtime","info","Light-school power casts ready");
+ else host.report("runtime","info","Light- and Body-school power casts ready");
  return true;
 }
 static bool(*itemActivator)()=activateItems;
@@ -190,6 +191,26 @@ static void publish(uint64_t tick){
 }
 struct Pulse {LARGE_INTEGER start=stamp();~Pulse(){const double d=since(start);pulse+=d;pulseWorst=(std::max)(pulseWorst,d);++frames;}};
 }
+// characters.set_mark, published for other mods' render threads (character_mark_nodes): each marked live character's
+// scene node (character +0x18) and value, resolved at the session pulse from this pulse's roster. A seqlock copy of
+// at most 64 entries: the reader takes no lock, reads no game memory and allocates nothing.
+namespace marks {
+struct Entry {uintptr_t node=0;uint32_t value=0;char name[32]{};};
+static Entry table[64];static volatile LONG count=0;static volatile LONG sequence=0;static std::vector<scripting::Mark> wanted;static bool published=false;
+static void refresh(bool session){
+ host.collectMarks(wanted);
+ Entry next[64];LONG n=0;
+ if(session&&!wanted.empty()){const auto roster=captureCharacters();
+  if(roster&&roster->ready)for(const auto& m:wanted)for(const auto& c:roster->characters){
+   if(n>=64)break;if(!c.nativeCharacter||(c.stateKnown&&c.dead))continue;
+   if(m.player?!(c.playerKnown&&c.player):(c.record!=m.record))continue;
+   uintptr_t node=0;if(!copyWorldMemory(c.nativeCharacter+0x18,&node,8)||!node)continue;
+   next[n].node=node;next[n].value=m.value;std::memcpy(next[n].name,m.name,32);++n;}
+ }
+ if(!n&&!published)return;
+ InterlockedIncrement(&sequence);MemoryBarrier();std::memcpy(table,next,sizeof(Entry)*size_t(n));count=n;MemoryBarrier();InterlockedIncrement(&sequence);published=n>0;
+}
+}
 static void pumpPresentation(uint64_t thread,uint64_t windowThread,const std::string& phase,uint64_t player,uint64_t now){
  frametime::Pulse timing;frametime::publish(now);
  if(!runtimeEnabled||!frameReady||!session.begin(thread,windowThread,phase,player,now))return;
@@ -223,6 +244,8 @@ static void pumpPresentation(uint64_t thread,uint64_t windowThread,const std::st
  }
  combat::deliver(host,captureCharacters());zones::deliver(host,captureCharacters());scriptcommands::deliver(host,worldPulse);gamemessages::deliver(host);
  sharedlua::deliver(host);memberreads::deliver(host);gear::deliver(host);modsettings::deliver(host);sounds::deliver(host);gestures::deliver(host);itemids::deliver(host);recordmerge::deliver(host);npcpowers::deliver(host,captureCharacters());dialogs::deliver();powers::deliver(host);powers::step(host,phase);
+ marks::refresh(worldPulse);damagescale::refresh(host,worldPulse);
+ tickBoosts(host,worldPulse&&!boosts.empty()?captureCharacters():nullptr,worldPulse,now);
  {const auto start=frametime::stamp();session.tickTimers();const double d=frametime::since(start);frametime::lua+=d;frametime::luaWorst=(std::max)(frametime::luaWorst,d);}
  host.flushSettings();
 }
@@ -428,7 +451,23 @@ extern "C" __declspec(dllexport) int settings_tab_host_open(){return settingstab
 extern "C" __declspec(dllexport) int settings_tab_host_title(int tab,wchar_t* out,int capacity){return settingstabs::hostedTitle(tab,out,capacity);}
 extern "C" __declspec(dllexport) int settings_tab_host_rows(int tab,int page,settingstabs::Row* out,int capacity){return settingstabs::hostedRows(tab,page,out,capacity);}
 extern "C" __declspec(dllexport) void settings_tab_host_change(int tab,int page,int id,int kind,int delta,float position,int checked,int key){settingstabs::hostedChange(tab,page,id,kind,delta,position,checked,key);}
+extern "C" __declspec(dllexport) uint32_t character_marks_version(){return 1;}
+// Fills up to `capacity` (node, value) pairs for marks called `name`; returns how many. Any thread; no lock, no
+// game memory read, no allocation. A node may belong to a character that left the level since the last pulse.
+extern "C" __declspec(dllexport) int character_mark_nodes(const char* name,uintptr_t* nodes,uint32_t* values,int capacity){
+ if(!name||capacity<=0||!nodes||!values)return 0;
+ for(int attempt=0;attempt<8;++attempt){
+  const LONG before=marks::sequence;if(before&1){YieldProcessor();continue;}MemoryBarrier();
+  int n=0;const LONG seen=marks::count;const LONG total=seen<64?seen:64;
+  for(LONG i=0;i<total&&n<capacity;++i)if(!strncmp(marks::table[i].name,name,32)){nodes[n]=marks::table[i].node;values[n]=marks::table[i].value;++n;}
+  MemoryBarrier();if(marks::sequence==before)return n;
+ }
+ return 0;
+}
 // Help text for a row of the Mod Settings tab, by the id from its rows (0 when none): for a host's tooltip.
 extern "C" __declspec(dllexport) int mod_settings_help(int id,wchar_t* out,int capacity){return modsettings::help(id,out,capacity);}
+// The category of a Mod Settings section, by its divider row's id (kind 0): Graphics, Camera, Gameplay, Content or
+// Utility from its mod's manifest.toml `category`; 0 when none. Same copy rules as mod_settings_help.
+extern "C" __declspec(dllexport) int mod_settings_category(int id,wchar_t* out,int capacity){return modsettings::category(id,out,capacity);}
 extern "C" __declspec(dllexport) void settings_tab_host_event(int tab,int event){settingstabs::hostedEvent(tab,event);}
 BOOL WINAPI DllMain(HINSTANCE h,DWORD why,LPVOID){if(why==DLL_PROCESS_ATTACH){module=h;DisableThreadLibraryCalls(h);}return TRUE;}

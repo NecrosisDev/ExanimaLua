@@ -9,7 +9,7 @@
 // ScriptRuntime.ini [settings] profile. Edits are a draft until Apply, as for the game's own pages; Cancel drops them.
 namespace modsettings {
 using scripting::SettingDef;using scripting::SettingChange;
-struct Section {std::string owner,title;std::vector<SettingDef> defs;std::filesystem::path config;bool native=false;};
+struct Section {std::string owner,title;std::vector<SettingDef> defs;std::filesystem::path config;bool native=false;std::string category;bool categoryRead=false;};
 using Values=std::map<std::string,std::map<std::string,std::string>>;   // owner -> key -> value text
 static std::recursive_mutex lock;
 static std::vector<Section> sections;static Values committed,staged;
@@ -110,11 +110,11 @@ static int rows(void*,int page,settingstabs::Row* out,int room){
  std::lock_guard<std::recursive_mutex> g(lock);refs.clear();texts.clear();if(page!=0)return 0;
  const Values& v=editing?staged:committed;const std::string& profile=editing?stagedProfile:activeProfile;int n=0;
  auto push=[&](settingstabs::Row r,Ref ref){if(n>=room)return;r.id=int(refs.size());refs.push_back(ref);out[n++]=r;};
- settingstabs::Row r;r.kind=0;r.label=L"Profile";push(r,{});refs.back().what=-1;
+ settingstabs::Row r;r.kind=0;r.label=L"Profile";push(r,{});refs.back().what=-2;
  r={};r.kind=3;r.label=L"Profile";r.value=keep(wide(profile));push(r,{0});
  r={};r.kind=3;r.label=L"New profile";r.value=L"Copy";push(r,{1});
  for(size_t s=0;s<sections.size()&&n<room;++s){const auto& sec=sections[s];if(sec.defs.empty())continue;
-  r={};r.kind=0;r.label=keep(wide(sec.title));push(r,{-1});
+  r={};r.kind=0;r.label=keep(wide(sec.title));push(r,{-3,s});
   for(size_t i=0;i<sec.defs.size()&&n<room;++i){const auto& d=sec.defs[i];const auto value=effective(v,sec,d);r={};
    std::wstring label=wide(d.label);if(sec.native&&d.type!="info")label+=L" *";
    if(d.type=="toggle"){r.kind=1;r.checked=value=="true";}
@@ -128,6 +128,26 @@ static int rows(void*,int page,settingstabs::Row* out,int room){
  bool natives=false;for(const auto& s:sections)natives=natives||s.native;
  if(natives&&n<room){r={};r.kind=5;r.label=L"* after a restart";push(r,{-1});}
  return n;
+}
+// A section's category for a host's grouping: `category = "..."` in its mod's manifest.toml (Graphics, Camera,
+// Gameplay, Content or Utility); the runtime's own section and the Profile row are Utility. Read once per section.
+static std::string categoryOf(Section& s){
+ if(s.categoryRead)return s.category;s.categoryRead=true;
+ if(s.owner=="runtime"){s.category="Utility";return s.category;}
+ if(profilesDirectory.empty())return s.category;
+ const auto mods=profilesDirectory.parent_path().parent_path();
+ const std::string folder=s.owner.rfind("native:",0)==0?s.owner.substr(7):s.owner;
+ std::ifstream in(mods/wide(folder)/L"manifest.toml",std::ios::binary);std::string line;
+ while(std::getline(in,line)){line=trim(line);if(line.rfind("category",0)!=0)continue;const auto eq=line.find('=');if(eq==std::string::npos)continue;
+  std::string v=trim(line.substr(eq+1));if(v.size()>=2&&v.front()=='"'&&v.back()=='"')v=v.substr(1,v.size()-2);
+  for(const char* known:{"Graphics","Camera","Gameplay","Content","Utility"})if(v==known){s.category=v;break;}break;}
+ return s.category;
+}
+static int category(int id,wchar_t* out,int capacity){
+ std::lock_guard<std::recursive_mutex> g(lock);if(id<0||size_t(id)>=refs.size())return 0;const auto ref=refs[size_t(id)];std::wstring text;
+ if(ref.what==-2)text=L"Utility";else if(ref.what==-3&&ref.section<sections.size())text=wide(categoryOf(sections[ref.section]));
+ if(out&&capacity>0){const size_t n=(std::min)(text.size(),size_t(capacity-1));std::wmemcpy(out,text.data(),n);out[n]=0;}
+ return int(text.size());
 }
 // A row's help text (settings.define `help`), for a host that shows it as the row's tooltip. Returns its length in
 // UTF-16 units (0 when the row has none), copying at most capacity-1 of them and a terminator.
