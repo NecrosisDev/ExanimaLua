@@ -5,7 +5,7 @@
 #include <utility>
 // Shared owner of the game's Settings form (exports add_settings_tab & co.): extra tabs beside Graphics and
 // Controls, and extra rows under the native Controls list, built from rows the registered tabs supply. This is
-// ExCamera's reviewed native Settings integration (E:\ExCamera\src\native_settings.cpp, mod\panel.inl) made generic:
+// ExCamera's reviewed native Settings integration (ExCamera's src/native_settings.cpp and src/mod/panel.inl) made generic:
 // the same form/element contract, element tables replaced through the game's own copy/set/free, the same Apply,
 // Cancel and Defaults sequencing and checkbox coordinate correction. It runs from one detour of the GUI
 // maintenance step 0x32180, installed only on its original bytes: ExCamera registers its Camera, Combat and VR tabs
