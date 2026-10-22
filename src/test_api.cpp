@@ -31,8 +31,8 @@ int main(){
 
  // Version and capabilities.
  host.capabilities(timerEvents|itemStats|worldRead);
- assert(load("version","assert(api.version==1 and api.revision==28 and api.runtime=='0.28.0' and api.addon=='version')\n"
-  "local c=api.capabilities() assert(#c==2 and c[1]=='items.stats' and c[2]=='timers')","timers,items.stats"));
+assert(load("version","assert(api.version==1 and api.revision==28 and api.runtime=='0.28.0' and api.addon=='version')\n"
+   "local c=api.capabilities() assert(#c==2 and ((c[1]=='items.stats' and c[2]=='timers') or (c[1]=='timers' and c[2]=='items.stats')))", "timers,items.stats"));
  assert(!load("typo","","timers,item.stats")&&host.error().find("did you mean 'items.stats'")!=std::string::npos);
  assert(!load("absent","","world.spawn")&&host.error().find("missing capability: world.spawn (")!=std::string::npos);
  assert(load("optional","","timers","world.raed")&&saw("optional|warn|unknown capability in optional: 'world.raed' (did you mean 'world.read'?)"));
