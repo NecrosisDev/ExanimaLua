@@ -167,6 +167,9 @@ mean" hint; in `optional` it is logged and ignored.
 | `timers.cancel(id)` | boolean | true when a pending timer of this addon was removed |
 | `timers.now()` | seconds | presentation clock, not game time |
 | `tasks.run(fn [, {budget = n}])` | true | runs `fn` as a task: when it uses up its instruction budget (`n` per pulse, 10,000..200,000, default 200,000) it pauses and goes on at the next pulse, so a long job such as level generation finishes over several frames; works like a timer callback; at most 8 per addon; needs `timers` (0.28.0) |
+| `tasks.worker(module, input, fn)` | handle | runs this addon's module `module` on a runtime worker thread, in a separate Lua state with no game API (base, table, string, math, utf8, `require` for this addon's modules, `print`/`log`); the module must return a function, which is called with a copy of `input`; its first result is copied back and `fn(result, nil)` (or `fn(nil, error)`) runs on the main thread at a later pulse. Values are plain data (nil, booleans, numbers, strings, tables of those; 32 deep; input 8 MiB, result 32 MiB). Memory per job is the addon's limit; at most 4 jobs per addon, 2 running at once in all. Cancelled without calling `fn` by `tasks.cancel_worker`, leaving a game for the menu, the addon failing or unloading; needs `timers` (0.28.0) |
+| `tasks.cancel_worker(handle)` | boolean | cancels a job this addon started; `fn` is not called (0.28.0) |
+| `tasks.workers()` | integer | this addon's unfinished jobs (0.28.0) |
 | `tasks.yield()` | nothing | inside a task only: pauses it until the next pulse (outside a task, or inside a C callback such as a `table.sort` comparator, it is an error) (0.28.0) |
 | `tasks.count()` | integer | this addon's unfinished tasks |
 | `profile.begin(name)`, `profile.finish(name)` | boolean | a timed scope (name 1..48 bytes, up to 16 open) that appears in the runtime profiler's log as `scope name`; false while the profiler is off (0.28.0) |

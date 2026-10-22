@@ -1,6 +1,10 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <deque>
+#include <mutex>
+#include <thread>
 #include <chrono>
 #include <map>
 #include <unordered_map>
@@ -77,6 +81,12 @@ struct Event {
 struct Result { bool handled=false;Action action=Action::none;bool restore=false,consume=false;int wear=-1,dirt=-1; };
 
 struct Module { std::string name,source; };
+// tasks.worker: one job for a runtime worker thread. Everything the thread touches is in here (copied in at start);
+// the result is read by the main thread only after `state` says it is finished.
+struct WorkerJob {
+ std::string addon,module,input,output,error;std::vector<Module> modules;size_t memory=0;std::vector<std::string> logs;
+ std::atomic<int> state{0};std::atomic<bool> cancel{false};   // state: 0 waiting, 1 running, 2 done, 3 failed
+};
 struct ScriptEvent { std::string name,value;bool numberKnown=false;int32_t number=0; };
 struct CombatHit {
  uint32_t record=0;std::string name;bool player=false,downed=false;float health=0,balance=0;
@@ -204,7 +214,8 @@ private:
   uint64_t gameCalls=0,gameCallsTotal=0,failures=0;std::chrono::steady_clock::time_point profileStart{};bool profileOpen=false;const char* profileLabel="callback";int budgetGiven=100000;
   std::vector<std::pair<std::string,std::chrono::steady_clock::time_point>> scopes;
   bool loading=true,enabled=true;int instructions=0,storageOps=0,worldOps=0,characterOps=0;
-  bool timerRunning=false,taskRunning=false;std::vector<int> tasks,taskBudgets;uint64_t execution=0;std::vector<AiChange> aiChanges;int statsReads=0;   // tasks: registry refs of tasks.run coroutines
+  bool timerRunning=false,taskRunning=false;std::vector<int> tasks,taskBudgets;
+  struct Worker {uint32_t handle=0;std::shared_ptr<WorkerJob> job;int callback=LUA_NOREF;};std::vector<Worker> workers;uint64_t execution=0;std::vector<AiChange> aiChanges;int statsReads=0;   // tasks: registry refs of tasks.run coroutines
   std::vector<std::pair<std::string,int>> titleHandlers;std::vector<int> titleAfter,titleActsAs;   // row label -> Lua function reference, anchor, base row it acts as
   std::vector<NativeCall> nativeCalls;
   std::string settingsTitle;std::vector<SettingDef> settingDefs;   // Mod Settings rows, published after a successful load
@@ -427,28 +438,28 @@ private:
  // string, or a table of those, nested at most 6 deep, 16 KiB encoded) is copied, never shared; `target` is an addon ID
  // or "*" for every other addon. Delivered at the next pulse to the target's handlers for `topic`, as fn(value, from).
  // At most 32 messages waiting per receiver; a full inbox refuses (false).
- static bool encodeValue(lua_State* L,int index,std::string& out,int depth){
-  if(out.size()>16384||depth>6)return false;index=lua_absindex(L,index);
+ static bool encodeValue(lua_State* L,int index,std::string& out,int depth,size_t maxBytes=16384,int maxDepth=6){
+  if(out.size()>maxBytes||depth>maxDepth)return false;index=lua_absindex(L,index);
   switch(lua_type(L,index)){
    case LUA_TNIL:out+='n';return true;
    case LUA_TBOOLEAN:out+=lua_toboolean(L,index)?'t':'f';return true;
    case LUA_TNUMBER:if(lua_isinteger(L,index)){out+='i';const lua_Integer v=lua_tointeger(L,index);out.append((const char*)&v,8);}else{out+='d';const lua_Number v=lua_tonumber(L,index);out.append((const char*)&v,8);}return true;
-   case LUA_TSTRING:{size_t n=0;const char* s=lua_tolstring(L,index,&n);if(n>16384)return false;out+='s';const uint32_t k=uint32_t(n);out.append((const char*)&k,4);out.append(s,n);return true;}
+   case LUA_TSTRING:{size_t n=0;const char* s=lua_tolstring(L,index,&n);if(n>maxBytes)return false;out+='s';const uint32_t k=uint32_t(n);out.append((const char*)&k,4);out.append(s,n);return true;}
    case LUA_TTABLE:{if(!lua_checkstack(L,4))return false;out+='{';lua_pushnil(L);
     while(lua_next(L,index)){const int key=lua_type(L,-2);if(key!=LUA_TSTRING&&key!=LUA_TNUMBER){lua_pop(L,2);return false;}
-     if(!encodeValue(L,-2,out,depth+1)||!encodeValue(L,-1,out,depth+1)){lua_pop(L,2);return false;}lua_pop(L,1);}
-    out+='}';return out.size()<=16384;}
+     if(!encodeValue(L,-2,out,depth+1,maxBytes,maxDepth)||!encodeValue(L,-1,out,depth+1,maxBytes,maxDepth)){lua_pop(L,2);return false;}lua_pop(L,1);}
+    out+='}';return out.size()<=maxBytes;}
    default:return false;
   }
  }
- static bool decodeValue(lua_State* L,const std::string& in,size_t& at,int depth){
-  if(at>=in.size()||depth>7||!lua_checkstack(L,4))return false;const char tag=in[at++];
+ static bool decodeValue(lua_State* L,const std::string& in,size_t& at,int depth,int maxDepth=6){
+  if(at>=in.size()||depth>maxDepth+1||!lua_checkstack(L,4))return false;const char tag=in[at++];
   switch(tag){
    case 'n':lua_pushnil(L);return true;case 't':lua_pushboolean(L,1);return true;case 'f':lua_pushboolean(L,0);return true;
    case 'i':{if(at+8>in.size())return false;lua_Integer v;std::memcpy(&v,in.data()+at,8);at+=8;lua_pushinteger(L,v);return true;}
    case 'd':{if(at+8>in.size())return false;lua_Number v;std::memcpy(&v,in.data()+at,8);at+=8;lua_pushnumber(L,v);return true;}
    case 's':{if(at+4>in.size())return false;uint32_t n;std::memcpy(&n,in.data()+at,4);at+=4;if(at+n>in.size())return false;lua_pushlstring(L,in.data()+at,n);at+=n;return true;}
-   case '{':{lua_newtable(L);while(at<in.size()&&in[at]!='}'){if(!decodeValue(L,in,at,depth+1))return false;if(!decodeValue(L,in,at,depth+1))return false;lua_rawset(L,-3);}if(at>=in.size())return false;++at;return true;}
+   case '{':{lua_newtable(L);while(at<in.size()&&in[at]!='}'){if(!decodeValue(L,in,at,depth+1,maxDepth))return false;if(!decodeValue(L,in,at,depth+1,maxDepth))return false;lua_rawset(L,-3);}if(at>=in.size())return false;++at;return true;}
    default:return false;
   }
  }
@@ -529,6 +540,117 @@ private:
   }
  }
  private:
+ // tasks.worker(module, input, fn): pure computation on a runtime worker thread. `module` (one of this addon's
+ // [script.modules]) is run in a new Lua state of its own on that thread and must return a function; that function is
+ // called with a copy of `input` and its first result is copied back. fn(result, nil) or fn(nil, error) then runs on
+ // the main thread at a later pulse. The worker state has base/table/string/math/utf8 (the addon's own sandbox),
+ // `require` for this addon's modules, and `print`/`log.*` (kept and logged with the result); no game API, no
+ // `api`, `tasks`, `timers` or `storage`. Values cross as plain data (nil, booleans, numbers, strings, tables of
+ // those; 32 deep; input 8 MiB, result 32 MiB encoded). Memory per job: the addon's own limit. At most 4 jobs per
+ // addon and 2 running at once in all; more wait. Cancelled (fn not called) by tasks.cancel_worker(handle), leaving a
+ // game for the menu, the addon failing or unloading, and the runtime stopping.
+ static constexpr size_t workerInputBytes=8u*1024*1024,workerOutputBytes=32u*1024*1024;static constexpr int workerDepth=32;
+ struct WorkerContext {size_t bytes=0,limit=0;WorkerJob* job=nullptr;int cache=LUA_NOREF;std::vector<bool> importing;};
+ static void* workerAllocate(void* ud,void* ptr,size_t old,size_t size){
+  auto c=static_cast<WorkerContext*>(ud);if(!ptr)old=0;
+  if(!size){std::free(ptr);c->bytes-=old;return nullptr;}
+  if(size>c->limit||c->bytes-old>c->limit-size)return nullptr;
+  void* next=std::realloc(ptr,size);if(next)c->bytes=c->bytes-old+size;return next;
+ }
+ static WorkerContext* workerContext(lua_State* W){void* p=nullptr;lua_getallocf(W,&p);return static_cast<WorkerContext*>(p);}
+ static void workerHook(lua_State* W,lua_Debug*){if(workerContext(W)->job->cancel.load())luaL_error(W,"worker cancelled");}
+ static int workerLog(lua_State* W){
+  auto c=workerContext(W);std::string line;const int n=lua_gettop(W);
+  for(int i=1;i<=n;++i){size_t k=0;const char* s=luaL_tolstring(W,i,&k);if(i>1)line+=' ';line.append(s,(std::min)(k,size_t(400)));lua_pop(W,1);}
+  if(c->job->logs.size()<32)c->job->logs.push_back(std::string(lua_tostring(W,lua_upvalueindex(1)))+": "+line);return 0;
+ }
+ static int workerRequire(lua_State* W){
+  auto c=workerContext(W);size_t length=0;const char* name=luaL_checklstring(W,1,&length);const auto& modules=c->job->modules;
+  size_t index=0;for(;index<modules.size();++index)if(modules[index].name==std::string(name,length))break;
+  if(index==modules.size())return luaL_error(W,"module is not declared in this addon: %s",name);
+  lua_rawgeti(W,LUA_REGISTRYINDEX,c->cache);lua_rawgeti(W,-1,int(index+1));if(!lua_isnil(W,-1))return 1;lua_pop(W,1);
+  if(c->importing[index])return luaL_error(W,"cyclic module import: %s",name);c->importing[index]=true;
+  const std::string chunk="@"+c->job->addon+"/"+modules[index].name;
+  if(luaL_loadbufferx(W,modules[index].source.data(),modules[index].source.size(),chunk.c_str(),"t")!=LUA_OK)return lua_error(W);
+  lua_call(W,0,1);c->importing[index]=false;
+  if(lua_isnil(W,-1)){lua_pop(W,1);lua_pushboolean(W,1);}lua_pushvalue(W,-1);lua_rawseti(W,-3,int(index+1));return 1;
+ }
+ static int workerBody(lua_State* W){
+  auto c=workerContext(W);auto& job=*c->job;
+  const struct {const char* name;lua_CFunction open;} libs[]={{LUA_GNAME,luaopen_base},{LUA_TABLIBNAME,luaopen_table},{LUA_STRLIBNAME,luaopen_string},{LUA_MATHLIBNAME,luaopen_math},{LUA_UTF8LIBNAME,luaopen_utf8}};
+  for(const auto& lib:libs){luaL_requiref(W,lib.name,lib.open,1);lua_pop(W,1);}
+  for(const char* name:{"dofile","loadfile","load","collectgarbage","setmetatable","getmetatable"}){lua_pushnil(W);lua_setglobal(W,name);}
+  lua_newtable(W);for(const char* level:{"info","warn","error"}){lua_pushstring(W,level);lua_pushcclosure(W,workerLog,1);lua_setfield(W,-2,level);}lua_setglobal(W,"log");
+  lua_pushstring(W,"info");lua_pushcclosure(W,workerLog,1);lua_setglobal(W,"print");
+  lua_newtable(W);c->cache=luaL_ref(W,LUA_REGISTRYINDEX);c->importing.assign(job.modules.size(),false);
+  lua_pushcfunction(W,workerRequire);lua_setglobal(W,"require");
+  lua_pushcfunction(W,workerRequire);lua_pushstring(W,job.module.c_str());lua_call(W,1,1);
+  if(!lua_isfunction(W,-1))return luaL_error(W,"worker module %s must return a function",job.module.c_str());
+  size_t at=0;if(!decodeValue(W,job.input,at,0,workerDepth))return luaL_error(W,"worker input could not be copied");
+  lua_call(W,1,1);
+  std::string out;if(!encodeValue(W,-1,out,0,workerOutputBytes,workerDepth))return luaL_error(W,"worker result must be nil, a boolean, number, string or a table of those (at most 32 deep, 32 MiB)");
+  job.output.swap(out);return 0;
+ }
+ static void executeWorker(WorkerJob& job){
+  if(job.cancel.load()){job.error="worker cancelled";job.state=3;return;}
+  job.state=1;WorkerContext c;c.limit=job.memory;c.job=&job;
+  lua_State* W=lua_newstate(workerAllocate,&c);if(!W){job.error="worker: Lua allocation failed";job.state=3;return;}
+  lua_sethook(W,workerHook,LUA_MASKCOUNT,100000);
+  lua_pushcfunction(W,workerBody);const int status=lua_pcall(W,0,0,0);
+  if(status!=LUA_OK){const char* e=lua_tostring(W,-1);job.error=e?e:(status==LUA_ERRMEM?"not enough memory":"worker failed");}
+  lua_close(W);job.state=status==LUA_OK?2:3;
+ }
+ struct WorkerPool {std::mutex lock;std::deque<std::shared_ptr<WorkerJob>> waiting;int running=0;};
+ static WorkerPool& workerPool(){static WorkerPool pool;return pool;}
+ static void workerLoop(std::shared_ptr<WorkerJob> job){
+  for(;;){
+   try{executeWorker(*job);}catch(...){job->error="worker failed";job->state=3;}
+   auto& pool=workerPool();std::lock_guard<std::mutex> guard(pool.lock);
+   if(pool.waiting.empty()){--pool.running;return;}job=pool.waiting.front();pool.waiting.pop_front();
+  }
+ }
+ static void startWorker(const std::shared_ptr<WorkerJob>& job){
+  auto& pool=workerPool();std::lock_guard<std::mutex> guard(pool.lock);
+  if(pool.running<2){++pool.running;try{std::thread(workerLoop,job).detach();}catch(...){--pool.running;job->error="worker thread could not start";job->state=3;}}
+  else pool.waiting.push_back(job);
+ }
+ static int runWorker(lua_State* L){
+  auto a=context(L);if(!canTime(*a))return luaL_error(L,"tasks.worker needs the timers capability");
+  const std::string module=luaL_checkstring(L,1);luaL_checktype(L,3,LUA_TFUNCTION);
+  bool declared=false;for(const auto& m:a->modules)declared=declared||m.name==module;if(!declared)return luaL_error(L,"tasks.worker: module is not declared in this addon: %s",module.c_str());
+  if(a->workers.size()>=4)return luaL_error(L,"tasks.worker: at most 4 jobs per addon");
+  auto job=std::make_shared<WorkerJob>();job->addon=a->id;job->module=module;job->modules=a->modules;job->memory=a->limit;
+  if(!encodeValue(L,2,job->input,0,workerInputBytes,workerDepth))return luaL_error(L,"tasks.worker input must be nil, a boolean, number, string or a table of those (at most 32 deep, 8 MiB)");
+  static uint32_t nextHandle=0;Addon::Worker w;w.handle=++nextHandle;w.job=job;lua_pushvalue(L,3);w.callback=luaL_ref(L,LUA_REGISTRYINDEX);
+  a->workers.push_back(w);startWorker(job);lua_pushinteger(L,lua_Integer(w.handle));return 1;
+ }
+ static void dropWorker(Addon& a,size_t i){a.workers[i].job->cancel=true;luaL_unref(a.state,LUA_REGISTRYINDEX,a.workers[i].callback);a.workers.erase(a.workers.begin()+std::ptrdiff_t(i));}
+ static int cancelWorker(lua_State* L){
+  auto a=context(L);const auto handle=uint32_t(luaL_checkinteger(L,1));
+  for(size_t i=0;i<a->workers.size();++i)if(a->workers[i].handle==handle){dropWorker(*a,i);lua_pushboolean(L,1);return 1;}
+  lua_pushboolean(L,0);return 1;
+ }
+ static int countWorkers(lua_State* L){lua_pushinteger(L,lua_Integer(context(L)->workers.size()));return 1;}
+ void cancelWorkers(Addon& a){while(!a.workers.empty())dropWorker(a,a.workers.size()-1);}
+ // Finished jobs: their callbacks run on this (the main) thread, one budgeted call each.
+ void deliverWorkers(){
+  for(auto& owned:addons){auto& a=*owned;if(a.workers.empty())continue;if(!a.enabled){cancelWorkers(a);continue;}
+   for(size_t i=0;i<a.workers.size()&&a.enabled;){
+    const int state=a.workers[i].job->state.load();if(state<2){++i;continue;}
+    auto job=a.workers[i].job;const int callback=a.workers[i].callback;a.workers.erase(a.workers.begin()+std::ptrdiff_t(i));
+    for(const auto& line:job->logs)report(a.id.c_str(),"info",("[worker] "+line).c_str());
+    auto L=a.state;if(!lua_checkstack(L,8)){luaL_unref(L,LUA_REGISTRYINDEX,callback);continue;}
+    lua_rawgeti(L,LUA_REGISTRYINDEX,callback);luaL_unref(L,LUA_REGISTRYINDEX,callback);
+    size_t at=0;
+    if(state==2&&decodeValue(L,job->output,at,0,workerDepth)){lua_pushnil(L);}
+    else{lua_settop(L,1);lua_pushnil(L);lua_pushstring(L,state==2?"worker result is too large for this addon's memory":job->error.c_str());}
+    job->output.clear();job->output.shrink_to_fit();
+    startBudget(a,"worker.done");a.timerRunning=true;const int status=protectedCall(L,2,0);a.timerRunning=false;stopBudget(a);
+    if(status!=LUA_OK){failure(a,"worker callback failed");cancelWorkers(a);break;}commitAiChanges(a);commitSettings(a);lua_settop(L,0);
+   }
+  }
+ }
+ public:void cancelAllWorkers(){for(auto& a:addons)cancelWorkers(*a);}private:
  static int setMark(lua_State* L){
   auto a=context(L);if(!(a->caps&characterMarks)||!(a->owner->available&characterMarks))return luaL_error(L,"characters.marks unavailable");
   Mark m;readTarget(L,1,"characters.set_mark",m.player,m.record,m.handle);
@@ -1446,7 +1568,7 @@ private:
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,scheduleTimer,1);lua_setfield(L,-2,"after");
   lua_pushboolean(L,1);lua_pushcclosure(L,scheduleTimer,1);lua_setfield(L,-2,"every");
   lua_pushcfunction(L,cancelTimer);lua_setfield(L,-2,"cancel");lua_pushcfunction(L,timerNow);lua_setfield(L,-2,"now");lua_setglobal(L,"timers");
-  lua_newtable(L);lua_pushcfunction(L,runTask);lua_setfield(L,-2,"run");lua_pushcfunction(L,countTasks);lua_setfield(L,-2,"count");lua_pushcfunction(L,yieldTask);lua_setfield(L,-2,"yield");lua_setglobal(L,"tasks");
+  lua_newtable(L);lua_pushcfunction(L,runTask);lua_setfield(L,-2,"run");lua_pushcfunction(L,countTasks);lua_setfield(L,-2,"count");lua_pushcfunction(L,yieldTask);lua_setfield(L,-2,"yield");lua_pushcfunction(L,runWorker);lua_setfield(L,-2,"worker");lua_pushcfunction(L,cancelWorker);lua_setfield(L,-2,"cancel_worker");lua_pushcfunction(L,countWorkers);lua_setfield(L,-2,"workers");lua_setglobal(L,"tasks");
   lua_newtable(L);lua_pushcfunction(L,getSetting);lua_setfield(L,-2,"get");lua_pushcfunction(L,setSetting);lua_setfield(L,-2,"set");lua_pushcfunction(L,settingsStatus);lua_setfield(L,-2,"status");lua_setglobal(L,"storage");
   lua_newtable(L);lua_pushcfunction(L,snapshotWorld);lua_setfield(L,-2,"snapshot");
   lua_pushcfunction(L,readTime);lua_setfield(L,-2,"time");lua_pushcfunction(L,writeTime);lua_setfield(L,-2,"set_time");
@@ -1678,6 +1800,7 @@ public:
  size_t size()const{return addons.size();}
  void clear(){if(shared.forget)for(const auto& a:addons)shared.forget(a->id);addons.clear();timerCursor=0;}
  bool unload(const std::string& id){
+  for(auto& a:addons)if(a->id==id)cancelWorkers(*a);
   const auto end=std::remove_if(addons.begin(),addons.end(),[&](const auto& a){return a->id==id;});
   const bool found=end!=addons.end();addons.erase(end,addons.end());if(found&&shared.forget)shared.forget(id);return found;
  }
@@ -1756,6 +1879,7 @@ public:
  }
  bool enabled(const std::string& id)const{for(const auto& a:addons)if(a->id==id)return a->enabled;return false;}
  void notifyPhase(const std::string& phase,uint64_t generation,const std::string& only=""){
+  if(only.empty()&&phase=="menu"&&phaseName=="session")cancelAllWorkers();   // leaving a game: its jobs are moot
   if(only.empty())phaseName=phase;
   // A spend asked for in a session that ended is dropped with it.
   if(only.empty()&&phase!="session")for(auto& a:addons){a->spend=0;a->restore=0;a->teach.clear();a->wheel.clear();a->marks.clear();a->scales.clear();a->limbs.clear();a->hitMaterial=-1;a->body.clear();a->arcs.clear();}
@@ -1792,7 +1916,7 @@ public:
   }
  }
  void runTimers(){
-  runTasks();deliverMessages();
+  runTasks();deliverMessages();deliverWorkers();
   if(addons.empty())return;
   const size_t count=addons.size(),start=timerCursor%count;size_t callbacks=0;
   for(size_t round=0;round<4&&callbacks<16;++round)for(size_t offset=0;offset<count&&callbacks<16;++offset){

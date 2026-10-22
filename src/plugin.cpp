@@ -362,7 +362,7 @@ extern "C" __declspec(dllexport) bool enable(){
 }
 extern "C" __declspec(dllexport) bool disable(){
  AcquireSRWLockExclusive(&lifecycle);
- {std::lock_guard<std::recursive_mutex> lock(scriptMutex);runtimeEnabled=false;gamebridge::active=false;aiTargets.clear();containerbridge::targets.clear();inventorybridge::target={};worlditems::beginPulse();invexports::reset();carrieditems::bags.clear();interactions::targets.clear();aiPulseReady=false;aiWorld=aiPlayer=aiScene=0;host.flushSettings(128,true);session.clear();session.configure(0,false);reloadWanted.clear();presentationWindow=nullptr;titleDrawThread=0;combat::listening=false;combat::clear();powers::listening=false;powers::clear();gear::listening=false;zones::listening=false;zones::clear();gamemessages::clear();scriptcommands::listening=false;scriptcommands::clear();}
+ {std::lock_guard<std::recursive_mutex> lock(scriptMutex);host.cancelAllWorkers();runtimeEnabled=false;gamebridge::active=false;aiTargets.clear();containerbridge::targets.clear();inventorybridge::target={};worlditems::beginPulse();invexports::reset();carrieditems::bags.clear();interactions::targets.clear();aiPulseReady=false;aiWorld=aiPlayer=aiScene=0;host.flushSettings(128,true);session.clear();session.configure(0,false);reloadWanted.clear();presentationWindow=nullptr;titleDrawThread=0;combat::listening=false;combat::clear();powers::listening=false;powers::clear();gear::listening=false;zones::listening=false;zones::clear();gamemessages::clear();scriptcommands::listening=false;scriptcommands::clear();}
  ReleaseSRWLockExclusive(&lifecycle);return true;
 }
 // EMTK submits each enabled addon at startup (and again on reload): its manifest's startup overrides are read

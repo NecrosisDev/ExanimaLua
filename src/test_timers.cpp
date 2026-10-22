@@ -1,6 +1,8 @@
 #include "runtime_session.h"
 #include <cassert>
 #include <cstdio>
+#include <chrono>
+#include <thread>
 #include "test_assert.h"
 struct Message {std::string id,value;};static std::vector<Message> messages;
 static void capture(void*,const char* id,const char*,const char* text){messages.push_back({id,text});}
@@ -59,5 +61,16 @@ int main(){
  assert(session.begin(1,1,"menu",0,3));session.tickTimers();session.end();assert(hits("gated")==1);
  session.clear();assert(gated.size()==0);
  TimerQueue queue;assert(queue.add({1,1,100,1}));Timer last;assert(queue.take((std::numeric_limits<uint64_t>::max)(),last)&&last.interval==0&&queue.entries().empty());
+ // tasks.worker: a module run on a worker thread, result copied back to a main-thread callback; errors; cancel.
+ {Host w(timerEvents);w.setLogger(capture);w.setTime(1);
+  std::vector<Module> mods{{"gen","local util=require('util') return function(t) local s=0 for i=1,t.n do s=s+i end return {sum=s,name=util.mark(t.name),list={1,2,{3}}} end"},
+   {"util","return {mark=function(s) return s..'!' end}"},{"bad","return function() error('boom') end"}};
+  const std::string src="assert(tasks.worker('gen',{n=1000,name='x'},function(r,e) assert(not e);log.info('w'..r.sum..r.name..#r.list..r.list[3][1]) end));"
+   "tasks.worker('bad',nil,function(r,e) log.info(e and e:find('boom') and 'werr' or 'wno') end);"
+   "local h=tasks.worker('gen',{n=1,name='c'},function() log.info('wcancel') end);assert(tasks.cancel_worker(h));"
+   "assert(not pcall(tasks.worker,'missing',1,function()end));assert(not pcall(tasks.worker,'gen',function()end,function()end))";
+  assert(w.load("workers",src.data(),src.size(),"timers",8*1024*1024,mods));
+  for(int i=0;i<1000&&(hits("w500500x!33")==0||hits("werr")==0);++i){std::this_thread::sleep_for(std::chrono::milliseconds(5));w.runTimers();}
+  assert(hits("w500500x!33")==1&&hits("werr")==1&&hits("wcancel")==0&&hits("wno")==0);}
  std::puts("LUA_TIMERS_PASSED: delays, repeats, cancellation/ownership, fairness/budgets, no catch-up, lifecycle/reload/unload cleanup, fault limits, stale event rejection and owner-thread gating");
 }
