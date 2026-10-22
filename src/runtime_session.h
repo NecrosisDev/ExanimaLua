@@ -3,7 +3,7 @@
 #include <limits>
 namespace scripting {
 struct ScriptSource {
- std::string id,source,required,optional;std::vector<Module> modules;
+ std::string id,source,required,optional;std::vector<Module> modules;size_t memory=8*1024*1024;   // Lua heap cap ([script] memory_mb)
  size_t bytes()const{size_t result=source.size();for(const auto& m:modules)result+=m.source.size();return result;}
 };
 // Called under the runtime mutex. Producers copy commands; only pulse consumes them.
@@ -49,7 +49,7 @@ class Session {
  bool apply(Record& record){
   if(!ready(record.code)){if(settled)return refuse(record);record.waiting=true;record.pending=false;return false;}
   record.pending=false;record.waiting=false;const auto& c=record.code;
-  const bool loaded=host.load(c.id,c.source.data(),c.source.size(),c.required,8*1024*1024,c.modules,c.optional);
+  const bool loaded=host.load(c.id,c.source.data(),c.source.size(),c.required,c.memory,c.modules,c.optional);
   if(loaded)host.notifyPhase(phase,generation,c.id);else{lastFailure=host.error();host.report(c.id.c_str(),"error",lastFailure.c_str());}
   return loaded;
  }

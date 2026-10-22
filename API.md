@@ -28,6 +28,7 @@ runtime = "com.necrosis.script-runtime"
 entry = "scripts/main.lua"
 requires = ["events.lifecycle", "timers"]      # load fails without these
 optional = ["world.read", "items.stats"]       # granted when available
+memory_mb = 8                                  # optional: Lua heap cap in MiB, 8..64 (default 8)
 
 [script.modules]
 config = "scripts/config.lua"                   # require("config")

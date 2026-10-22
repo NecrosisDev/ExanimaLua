@@ -316,6 +316,20 @@ extern "C" __declspec(dllexport) bool disable(){
 }
 // EMTK submits each enabled addon at startup (and again on reload): its manifest's startup overrides are read
 // then, from the sibling folder mods/<id>, so they are in place before the game reads those files.
+// [script] memory_mb = N in the addon's manifest raises its Lua heap cap from the default 8 MiB (at most 64 MiB),
+// for one-off heavy work such as level generation. Read from mods/<id>/manifest.toml; anything else keeps 8.
+static size_t addonMemory(const char* id){
+ constexpr size_t mib=1024*1024;if(controlDirectory.empty())return 8*mib;
+ try{std::error_code e;const auto mods=controlDirectory.parent_path();const auto folder=std::filesystem::weakly_canonical(mods/std::filesystem::u8path(id),e);
+  if(e||folder.parent_path()!=std::filesystem::weakly_canonical(mods,e))return 8*mib;
+  std::ifstream in(folder/L"manifest.toml",std::ios::binary);std::string line;bool script=false;
+  while(std::getline(in,line)){while(!line.empty()&&(line.back()=='\r'||line.back()==' '))line.pop_back();size_t s=0;while(s<line.size()&&(line[s]==' '||line[s]=='\t'))++s;line.erase(0,s);
+   if(!line.empty()&&line[0]=='['){script=line=="[script]";continue;}
+   if(!script||line.rfind("memory_mb",0)!=0)continue;const auto eq=line.find('=');if(eq==std::string::npos)continue;
+   const long v=std::strtol(line.c_str()+eq+1,nullptr,10);if(v>=8&&v<=64)return size_t(v)*mib;host.report(id,"warn","[script] memory_mb must be 8..64; 8 is used");return 8*mib;}
+ }catch(...){}
+ return 8*mib;
+}
 static void submitted(const char* id){
  if(!controlDirectory.empty()&&memberreads::ready)try{sharedlua::loadOverrides(id,controlDirectory.parent_path(),host);}catch(...){host.report(id,"warn","[script.overrides] could not be read");}
  // [script.records]: database records merged as the game reads objdb/objstrings (record_merge.h).
@@ -334,7 +348,8 @@ extern "C" __declspec(dllexport) bool load_script_addon(const char* id,const uns
  std::lock_guard<std::recursive_mutex> lock(scriptMutex);
  if(!runtimeEnabled)return false;
  try{
-  const bool result=session.submit({id,std::string((const char*)source,size),capabilities,"",{}},frameReady);
+  scripting::ScriptSource code{id,std::string((const char*)source,size),capabilities,"",{}};code.memory=addonMemory(id);
+  const bool result=session.submit(code,frameReady);
   if(!result)host.report(id,"error",session.error().c_str());else submitted(id);
   if(result&&!frameReady)host.flushSettings(1,true);return result;
  }catch(...){return false;}
@@ -350,7 +365,8 @@ extern "C" __declspec(dllexport) bool load_script_addon_v2(const char* id,const 
    if(!m.name||!m.source||strnlen_s(m.name,129)>128||m.size>1024*1024-total)return false;
    total+=m.size;bundle.push_back({m.name,std::string((const char*)m.source,m.size)});
   }
-  const bool result=session.submit({id,std::string((const char*)source,size),capabilities,optional,std::move(bundle)},frameReady);
+  scripting::ScriptSource code{id,std::string((const char*)source,size),capabilities,optional,std::move(bundle)};code.memory=addonMemory(id);
+  const bool result=session.submit(code,frameReady);
   if(!result)host.report(id,"error",session.error().c_str());else submitted(id);if(result&&!frameReady)host.flushSettings(1,true);return result;
  }catch(...){host.report(id,"error","Addon bundle allocation failed");return false;}
 }
