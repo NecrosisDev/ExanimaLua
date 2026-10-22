@@ -3,7 +3,6 @@ name: Build
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -13,8 +12,9 @@ permissions:
 jobs:
   # build.py finds the x64 MSVC toolchain itself and runs the owned-process tests; no game is needed.
   build:
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -33,40 +33,20 @@ jobs:
             dist/build.log
             dist/verification.json
           if-no-files-found: error
-
-  release:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-          architecture: x64
-      - name: Build, test and package the tagged runtime
-        run: python -X utf8 -B release.py --tag "$env:GITHUB_REF_NAME"
-      # A tag with a hyphen (v0.29.0-rc1) publishes a prerelease. An existing release is never replaced.
-      - name: Publish the GitHub release
+      # A push to main whose runtime version has no release yet tags v<version> and publishes it; later pushes
+      # with the same version publish nothing. Bump VERSION in build.py to release again.
+      - name: Release a new version
+        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $assets = Get-ChildItem dist -File | Where-Object { $_.Name -like '*.zip' -or $_.Name -like '*.zip.sha256' } | ForEach-Object FullName
-          $flags = @('--verify-tag', '--title', "Exanima Lua Runtime $env:GITHUB_REF_NAME", '--generate-notes')
-          if ($env:GITHUB_REF_NAME.Contains('-')) { $flags += '--prerelease' }
-          gh release create $env:GITHUB_REF_NAME @assets --repo $env:GITHUB_REPOSITORY @flags
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      # The all-mods bundle takes each mod's newest release, so tag the mods first. The token reads public
-      # repositories; private ones need a token with access to them in GH_TOKEN instead.
-      - name: Build and attach the all-mods bundle
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python -X utf8 -B bundle.py --download
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $bundle = Get-ChildItem dist -File -Filter 'ExanimaMods-*' | ForEach-Object FullName
-          gh release upload $env:GITHUB_REF_NAME @bundle --repo $env:GITHUB_REPOSITORY
+          $manifest = Get-Content dist/mods/com.necrosis.script-runtime/manifest.toml -Raw
+          $version = [regex]::Match($manifest, '(?m)^version = "([^"]+)"').Groups[1].Value
+          $tag = "v$version"
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { Write-Host "$tag is already released"; exit 0 }
+          $assets = Get-ChildItem dist -File -Filter 'ExanimaLua-*.zip*' | ForEach-Object FullName
+          $flags = @('--target', $env:GITHUB_SHA, '--title', "Exanima Lua Runtime $tag", '--generate-notes', '--latest=false')
+          if ($version.Contains('-')) { $flags += '--prerelease' }
+          gh release create $tag @assets --repo $env:GITHUB_REPOSITORY @flags
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

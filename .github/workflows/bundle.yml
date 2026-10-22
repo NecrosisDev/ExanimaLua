@@ -1,0 +1,50 @@
+name: All mods
+
+# Rebuilds ExanimaMods.zip from every mod's newest release and keeps it on the "all-mods" release. It runs after
+# each runtime build on main, every six hours to pick up new mod releases, and on demand; when no release changed
+# since the last bundle it publishes nothing.
+on:
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: all-mods
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Build the bundle from the newest releases
+        run: python -X utf8 -B bundle.py --download
+      - name: Publish it on the all-mods release
+        run: |
+          notes="$(printf 'Every NecrosisDev mod in one download, with the patched EMTK and an installer.\nUnzip it and run Install.cmd with Exanima closed.\n\nBuilt from:\n')$(sed 's/^/- /' dist/ExanimaMods-sources.txt)"
+          if ! gh release view all-mods --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create all-mods dist/ExanimaMods.zip dist/ExanimaMods.zip.sha256 --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "All mods" --notes "$notes" --latest
+          elif [[ "$(gh release view all-mods --repo "$GITHUB_REPOSITORY" --json body --jq .body)" == "$notes" ]]; then
+            echo "No mod release changed since the last bundle"
+          else
+            gh release upload all-mods dist/ExanimaMods.zip dist/ExanimaMods.zip.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit all-mods --repo "$GITHUB_REPOSITORY" --notes "$notes" --latest
+          fi
