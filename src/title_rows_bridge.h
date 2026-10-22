@@ -151,8 +151,10 @@ static void menuBuild(int mode){
  originalMenuBuild(mode);armed.on=false;releaseRetired();   // the builder wrote all six rows again
  uintptr_t obj=0;if(mode==0&&copyWorldMemory(base+rva::menuObject,&obj,8)&&titleMenu(obj)&&anyRows())tryArm(obj);
 }
-// Subtitles, drawn in the game's own small font right after the menu draw, centred below the menu's last row (so a
-// line never sits on another row), with the layout that draw used
+// Subtitles, drawn in the game's own small font right after the menu draw, with its own row: text is drawn upward
+// from its y (0x27700/0x27180 put a glyph between y - height and y), so row k's label ends at its row y and the next
+// label starts at y + row - [0x49a68c] (the title font's height). A subtitle sits centred in that gap when it fits
+// there, else on the same line just right of its row's label; it never reaches another row. Layout as the draw used
 // (0x128f30: row k at y = round(screen height * +0x200) + [0x49a690] + (k-1) * round(+0x1fc * +0x158), centred).
 // The draw selects the game's text shader first, as the game's own text draws do (0x2143b0(2)): a hovered row leaves
 // the highlight shader bound, and text drawn through it shows as a pale box. The previous mode is put back.
@@ -170,13 +172,18 @@ static void drawSubtitles(uintptr_t obj){
  const auto blend=(void(*)(unsigned))(base+0x73e90);const auto texture=(void(*)(uintptr_t))(base+0x214310);
  const auto shader=(void(*)(int))(base+0x2143b0);if(!readable(base+0x5b21b0,4))return;
  const uintptr_t previous=*(uintptr_t*)(base+0x49a670);const int previousShader=*(int*)(base+0x5b21b0);bool any=false;
- y=std::nearbyint(y+row*float(armed.count)+row*0.2f);   // below the last row
+ if(!readable(base+0x49a68c,4)||!readable(font+0xc,4))return;
+ const float titleHeight=float(*(int*)(base+0x49a68c)),smallHeight=float(*(int*)(font+0xc));
+ if(!(titleHeight>0.f)||!(smallHeight>0.f))return;const float gap=row-titleHeight;
  AcquireSRWLockShared(&extrasLock);
  for(int i=0;i<armed.count;++i){const int e=armed.extraIndex[i];
   if(e>=0&&e<maxExtra&&subtitles[e].len>0){
    if(!any){any=true;blend(0x103);shader(2);select(font);colour(0xc8,0xc0,0xb0,0xe0);}
-   const uintptr_t s=(uintptr_t)subtitles[e].text;const float w=float(measure(s));draw(std::nearbyint((W-w)*0.5f),y,s);
-   y=std::nearbyint(y+row*0.55f);}
+   const uintptr_t s=(uintptr_t)subtitles[e].text;const float w=float(measure(s));
+   if(gap>=smallHeight+2.f)draw(std::nearbyint((W-w)*0.5f),std::nearbyint(y+(gap-smallHeight)*0.5f+smallHeight),s);   // under its row
+   else{const float x=std::nearbyint((W+float(armed.final[i].width))*0.5f+row*0.3f);if(x+w<=W-4.f)draw(x,y,s);}         // beside its label
+  }
+  y=std::nearbyint(y+row);
  }
  ReleaseSRWLockShared(&extrasLock);
  if(any){*(uintptr_t*)(base+0x49a670)=previous;texture(*(uintptr_t*)(base+0x49a6b0));colour(0xff,0xff,0xff,0xff);shader(previousShader);blend(0x203);}

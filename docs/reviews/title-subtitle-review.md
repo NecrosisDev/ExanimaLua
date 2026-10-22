@@ -43,3 +43,12 @@ Now: the current mode `[0x5b21b0]` is read, `0x2143b0(2)` is called before the t
 `48 8d 64 24 d8 89 c8 3b 05`), and the previous mode is passed back afterwards (mode 0 only records itself, as in
 the menu draw). The lines are now drawn centred below the menu's last row, stacked half a row apart, instead of
 0.72 rows under their own row, where they reached into the next row.
+
+## r39e: placement with its own row
+
+Below the whole menu put the Endless line under EXIT, away from ENDLESS. From the decompile of `0x27700` (title
+font) and `0x27180` (current font), a glyph quad spans `y - height .. y`: text is drawn upward from y, so row k's
+label ends at its row y and the next label starts at `y + row - [0x49a68c]` (`[0x49a68c]` is the title font's glyph
+height; the small font's is `font+0xc`). A subtitle is drawn centred in that gap when the gap is at least its height
+plus 2 pixels; otherwise on the same line, 0.3 rows right of its label (the label width is the row record's), and not
+at all if that would leave the screen. Both values are read, never written.
