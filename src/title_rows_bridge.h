@@ -64,6 +64,15 @@ static bool heldBy(const char* label,Action action){
  for(const Extra& e:extras)if(e.used&&!std::strcmp(e.label.text,label))held=e.action==action;
  ReleaseSRWLockShared(&extrasLock);return held;
 }
+// title.set_subtitle: a short second line drawn small under a row (parallel to `extras`, under extrasLock; "" none).
+struct alignas(8) AnsiLine {uint16_t cp=0,elem=1;uint32_t pad=0;int64_t ref=-1,len=0;char text[64]{};};   // a constant game AnsiString
+static AnsiLine subtitles[maxExtra];
+static bool setSubtitle(const char* label,const char* text){
+ if(!validLabel(label)||!text)return false;AcquireSRWLockExclusive(&extrasLock);bool ok=false;
+ for(size_t i=0;i<maxExtra;++i)if(extras[i].used&&!std::strcmp(extras[i].label.text,label)){
+  auto& s=subtitles[i];std::memset(s.text,0,sizeof s.text);strncpy_s(s.text,sizeof s.text,text,_TRUNCATE);s.len=int64_t(std::strlen(s.text));ok=true;}
+ ReleaseSRWLockExclusive(&extrasLock);return ok;
+}
 // Called when the menu is rebuilt (no row text on screen any more): retired slots can be reused.
 static void releaseRetired(){AcquireSRWLockExclusive(&extrasLock);for(Extra& e:extras)e.retired=false;ReleaseSRWLockExclusive(&extrasLock);}
 
@@ -142,6 +151,30 @@ static void menuBuild(int mode){
  originalMenuBuild(mode);armed.on=false;releaseRetired();   // the builder wrote all six rows again
  uintptr_t obj=0;if(mode==0&&copyWorldMemory(base+rva::menuObject,&obj,8)&&titleMenu(obj)&&anyRows())tryArm(obj);
 }
+// Subtitles, drawn in the game's own small font right after the menu draw, with the layout that draw used
+// (0x128f30: row k at y = round(screen height * +0x200) + [0x49a690] + (k-1) * round(+0x1fc * +0x158), centred).
+// 0x27080(font) selects a font (the small one is *[0x49a8f0]), 0x27000(text) measures, 0x27180(x, y, text) draws;
+// the menu's title font and the previous current font are put back afterwards (docs/reviews/title-subtitle-review.md).
+static bool subtitleFont=false;
+static void drawSubtitles(uintptr_t obj){
+ if(!subtitleFont||!armed.on||!readable(base+rva::guiDesktop,8)||!readable(base+0x49a690,4)||!readable(base+0x49a8f0,8)||!readable(base+0x49a670,8)||!readable(base+0x49a6b0,8))return;
+ const uintptr_t screen=*(uintptr_t*)(base+rva::guiDesktop),font=*(uintptr_t*)(base+0x49a8f0);if(!screen||!font||!readable(screen+0x2c,4)||!readable(font+0x30,8))return;
+ const float W=float(*(int*)(screen+0x28)),H=float(*(int*)(screen+0x2c));
+ const float row=std::nearbyint(float(*(int*)(obj+0x1fc))**(float*)(obj+0x158));if(!(row>0.f)||!(H>0.f))return;
+ float y=std::nearbyint(H**(float*)(obj+0x200))+float(*(int*)(base+0x49a690));
+ const auto select=(void(*)(uintptr_t))(base+0x27080);const auto measure=(int(*)(uintptr_t))(base+0x27000);
+ const auto draw=(uint64_t(*)(float,float,uintptr_t))(base+0x27180);const auto colour=(void(*)(int,int,int,int))(base+0x1f9ad0);
+ const auto blend=(void(*)(unsigned))(base+0x73e90);const auto texture=(void(*)(uintptr_t))(base+0x214310);
+ const uintptr_t previous=*(uintptr_t*)(base+0x49a670);bool any=false;
+ AcquireSRWLockShared(&extrasLock);
+ for(int i=0;i<armed.count;++i){const int e=armed.extraIndex[i];
+  if(e>=0&&e<maxExtra&&subtitles[e].len>0){
+   if(!any){any=true;blend(0x103);select(font);colour(0xc8,0xc0,0xb0,0xe0);}
+   const uintptr_t s=(uintptr_t)subtitles[e].text;const float w=float(measure(s));draw(std::nearbyint((W-w)*0.5f),y+std::nearbyint(row*0.72f),s);}
+  y=std::nearbyint(y+row);}
+ ReleaseSRWLockShared(&extrasLock);
+ if(any){*(uintptr_t*)(base+0x49a670)=previous;texture(*(uintptr_t*)(base+0x49a6b0));colour(0xff,0xff,0xff,0xff);blend(0x203);}
+}
 static void menuDraw(uintptr_t obj){
  if(titleMenu(obj)){
   if(dirty.exchange(false)){disarm();releaseRetired();}   // registrations changed: rebuild below
@@ -153,6 +186,7 @@ static void menuDraw(uintptr_t obj){
  if(hover>baseRows)*(int*)(obj+0x6c)=0;if(pressed>baseRows)*(int*)(obj+0x204)=0;   // the game's own pass never indexes past row 6
  originalMenuDraw(obj);*(int*)(obj+0x6c)=hover;*(int*)(obj+0x204)=pressed;
  overflowDraw(obj);
+ __try{drawSubtitles(obj);}__except(EXCEPTION_EXECUTE_HANDLER){subtitleFont=false;}
 }
 static bool(*formOpen)()=nullptr;   // settingstabs::optionsOpen, set by the plugin (that header comes later)
 static int menuHit(uintptr_t obj,int x,int y,uintptr_t* outObj,int* outIndex){
@@ -226,6 +260,14 @@ static std::string available(bool presentationOwnsDraw){
  if(!gamebridge::operation(base+rva::measure,measurePrefix,sizeof measurePrefix)||!gamebridge::operation(base+rva::hoverTo,hoverPrefix,sizeof hoverPrefix)||
     !gamebridge::operation(base+rva::assign,assignPrefix,sizeof assignPrefix)||!gamebridge::operation(base+rva::width,widthPrefix,sizeof widthPrefix)||
     !readable(base+rva::menuObject,8)||!readable(base+rva::guiDesktop,8))return "a title-menu helper function did not match";
+ {const unsigned char selectPrefix[]={0x48,0x8d,0x64,0x24,0xd8,0x48,0x89,0xc8,0x48,0x89,0x05};
+  const unsigned char drawPrefix[]={0x53,0x57,0x56,0x41,0x54,0x48,0x8d,0x64,0x24,0x98,0x66,0x0f};
+  const unsigned char measurePrefix2[]={0x31,0xc0,0x48,0x89,0xca,0x48,0x85,0xc9,0x74,0x04,0x48,0x8b};
+  const unsigned char colourPrefix[]={0x88,0x0d};const unsigned char blendPrefix[]={0x48,0x8d,0x64,0x24,0xd8,0x89,0x4c,0x24,0x20,0x89,0xc8,0x3b};
+  const unsigned char texturePrefix[]={0x53,0x48,0x8d,0x64,0x24,0xe0,0x48,0x89,0xc8,0x48,0x3b,0x05};
+  subtitleFont=gamebridge::operation(base+0x27080,selectPrefix,sizeof selectPrefix)&&gamebridge::operation(base+0x27180,drawPrefix,sizeof drawPrefix)&&
+   gamebridge::operation(base+0x27000,measurePrefix2,sizeof measurePrefix2)&&gamebridge::operation(base+0x1f9ad0,colourPrefix,sizeof colourPrefix)&&
+   gamebridge::operation(base+0x73e90,blendPrefix,sizeof blendPrefix)&&gamebridge::operation(base+0x214310,texturePrefix,sizeof texturePrefix);}
  ready=true;return {};
 }
 }

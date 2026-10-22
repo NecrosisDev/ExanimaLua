@@ -128,7 +128,8 @@ struct IdChange { uint32_t before=0,after=0; };   // item.id_changed
 struct NativeCall { enum Kind { damage, push, drive, travel, place } kind=damage;float values[4]{};bool flag=false;uint32_t record=0,state=0;char name[17]{}; };
 class Host {
 public:
- std::string phaseName="loading";   // the last lifecycle phase delivered to addons (menu, loading, session)
+ std::string phaseName="loading";
+ inline static bool(*subtitleSetter)(const char* label,const char* text)=nullptr;   // titlerows::setSubtitle   // the last lifecycle phase delivered to addons (menu, loading, session)
  using Logger=void(*)(void*,const char*,const char*,const char*);
  using WorldProvider=const WorldSnapshot*(*)();
  using TimeRead=bool(*)(int64_t&);using TimeWrite=bool(*)(uint32_t);
@@ -525,6 +526,16 @@ private:
   const auto label=rowLabel(L);luaL_checktype(L,2,LUA_TBOOLEAN);
   if(a->loading)return luaL_error(L,"title.set_enabled works after loading; add the row and enable it from a callback");
   lua_pushboolean(L,a->owner->shared.enableRow&&a->owner->shared.enableRow(a->id,label,lua_toboolean(L,2)!=0));return 1;
+ }
+ // title.set_subtitle(label, text): a small second line under this addon's row ("" removes it); printable ASCII,
+ // at most 48 bytes. After loading, once the row exists.
+ static int setTitleSubtitle(lua_State* L){
+  auto a=context(L);if(!(a->caps&titleRows)||!(a->owner->available&titleRows))return luaL_error(L,"title.rows unavailable");
+  const auto label=rowLabel(L);size_t n=0;const char* text=luaL_checklstring(L,2,&n);
+  if(n>48)return luaL_error(L,"title.set_subtitle: at most 48 bytes");for(size_t i=0;i<n;++i)if(text[i]<0x20||text[i]>0x7e)return luaL_error(L,"title.set_subtitle: printable ASCII only");
+  if(a->loading)return luaL_error(L,"title.set_subtitle works after loading; call it from a callback or timer");
+  bool mine=false;for(const auto& h:a->titleHandlers)mine=mine||h.first==label;
+  lua_pushboolean(L,mine&&subtitleSetter&&subtitleSetter(label.c_str(),text));return 1;
  }
  // levels.serve(member, bytes, package): the game reads `bytes` instead of that package's copy of the member.
  static int serveLevel(lua_State* L){
@@ -1142,7 +1153,7 @@ private:
   lua_pushcfunction(L,readLevel);lua_setfield(L,-2,"level");lua_pushcfunction(L,readNearbyObjects);lua_setfield(L,-2,"nearby");lua_setglobal(L,"world");
   lua_newtable(L);lua_pushcfunction(L,readItemStats);lua_setfield(L,-2,"stats");lua_pushcfunction(L,addWear);lua_setfield(L,-2,"add_wear");lua_setglobal(L,"items");
   lua_newtable(L);lua_pushcfunction(L,addTitleRow);lua_setfield(L,-2,"add_row");lua_pushcfunction(L,removeTitleRow);lua_setfield(L,-2,"remove_row");
-  lua_pushcfunction(L,enableTitleRow);lua_setfield(L,-2,"set_enabled");lua_setglobal(L,"title");
+  lua_pushcfunction(L,enableTitleRow);lua_setfield(L,-2,"set_enabled");lua_pushcfunction(L,setTitleSubtitle);lua_setfield(L,-2,"set_subtitle");lua_setglobal(L,"title");
   lua_newtable(L);lua_pushcfunction(L,serveLevel);lua_setfield(L,-2,"serve");lua_pushcfunction(L,clearServedLevels);lua_setfield(L,-2,"clear_served");
   lua_pushcfunction(L,driveLevel);lua_setfield(L,-2,"drive");lua_pushcfunction(L,newGameLevel);lua_setfield(L,-2,"new_game");lua_pushcfunction(L,travelLevel);lua_setfield(L,-2,"travel");lua_pushcfunction(L,addPlacement);lua_setfield(L,-2,"add_placement");lua_setglobal(L,"levels");
   lua_newtable(L);lua_pushcfunction(L,readAsset);lua_setfield(L,-2,"read");lua_setglobal(L,"assets");

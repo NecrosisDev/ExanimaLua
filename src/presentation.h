@@ -32,7 +32,8 @@ static void presentationBody(HDC dc){
 static void presentationSafe(HDC dc){try{presentationBody(dc);}catch(...){host.report("runtime","error","Lifecycle pulse fault; runtime disabled");runtimeEnabled=false;gamebridge::active=false;}}
 static void present(){
  // The mod console and notices are drawn into the frame the game is about to present (console_bridge.h).
- if(runtimeEnabled&&readable(base+0x499610,8)){const auto start=frametime::stamp();console::draw(*(HDC*)(base+0x499610));frametime::overlay+=frametime::since(start);}
+ if(runtimeEnabled&&readable(base+0x499610,8)){const auto start=frametime::stamp();const HDC dc=*(HDC*)(base+0x499610);
+  console::draw(dc);frametime::overlay+=frametime::since(start);}
  originalPresent();
  __try{if(readable(base+0x499610,8))presentationSafe(*(HDC*)(base+0x499610));}
  __except(EXCEPTION_EXECUTE_HANDLER){runtimeEnabled=false;gamebridge::active=false;}
