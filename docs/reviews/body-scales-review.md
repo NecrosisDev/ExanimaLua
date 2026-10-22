@@ -19,7 +19,14 @@ writers). Not run in game.
   written (writable-page check, exception guard).
 - Release (factor 1), a phase change or unload writes the latest base back, only into the same live player and only
   where the runtime's value is still in place.
-- Factors: strength 0.25..3, animation 0.5..2; several addons multiply.
+- Factors: strength 0.25..3; animation 0.5..2 for the player, 0.02..2 for other characters (r38); several addons
+  multiply.
+- r38, animation floor 0.02 for non-player targets (decompile of `0x169200`, `0x156b20`; constants read from the EXE):
+  `+0xdcc` is only ever multiplied (`+0xdc8 = +0xdcc x k` at several states; `+0x288 += +0xdc8`); nothing divides by
+  it. The knockdown sets it to 0.4 (`0x31c3e0`) and adds 0.01 (`0x31c248`, double) a tick until it reaches 1.0
+  (`0x31be70`), then calls the wake-up `0x1660a0`. While a hold is below 1, a small rise (< 0.3) of the animation rate
+  is taken as that ramp and added to the base, so the base reaches the game's own value and release restores it; a
+  held foe that is down stays down until release, then the game's next ramp step wakes it.
 
 ## Risks left
 

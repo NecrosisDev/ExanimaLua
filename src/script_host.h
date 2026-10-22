@@ -1,6 +1,9 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <map>
+#include <unordered_map>
 #include <cmath>
 #include <limits>
 #include "timer_queue.h"
@@ -190,9 +193,16 @@ private:
   {"script.event",Kind::script,scriptEvents,"events.script"},{"zone.enter",Kind::zone,zoneEvents,"events.zone"},
   {"game.message",Kind::message,gameMessages,"events.messages"},{"power.cast",Kind::power,powerCast,"powers.cast"},
   {"gear.use",Kind::gear,gearUse,"events.gear_use"},{"settings.changed",Kind::setting,modSettings,"ui.settings"},{"item.id_changed",Kind::idChange,items,"items.read"}};
+ // The addon profiler (on by default; the runtime's Mod Settings "Profiler" toggle): per addon and per kind of call,
+ // calls, wall time, Lua instructions, memory and sampled hot lines; mods add their own scopes with profile.*.
+ public:inline static bool profiling=true;private:
+ struct ProfileBucket {uint64_t calls=0,instructions=0;double ms=0,worst=0;};
  struct Addon {
   Host* owner=nullptr;std::string id,error;lua_State* state=nullptr;
   uint64_t caps=0;size_t bytes=0,limit=8*1024*1024;
+  std::map<std::string,ProfileBucket> profile,profileTotal;std::unordered_map<std::string,uint64_t> hotLines,hotTotal;size_t peakBytes=0;
+  uint64_t gameCalls=0,gameCallsTotal=0;std::chrono::steady_clock::time_point profileStart{};bool profileOpen=false;const char* profileLabel="callback";int budgetGiven=100000;
+  std::vector<std::pair<std::string,std::chrono::steady_clock::time_point>> scopes;
   bool loading=true,enabled=true;int instructions=0,storageOps=0,worldOps=0,characterOps=0;
   bool timerRunning=false,taskRunning=false;std::vector<int> tasks;uint64_t execution=0;std::vector<AiChange> aiChanges;int statsReads=0;   // tasks: registry refs of tasks.run coroutines
   std::vector<std::pair<std::string,int>> titleHandlers;std::vector<int> titleAfter,titleActsAs;   // row label -> Lua function reference, anchor, base row it acts as
@@ -464,11 +474,60 @@ private:
     const std::string topic=payload.substr(1,tn);
     for(const auto& h:a.messageHandlers){if(h.first!=topic||!a.enabled)continue;auto L=a.state;if(!lua_checkstack(L,8))break;
      lua_rawgeti(L,LUA_REGISTRYINDEX,h.second);size_t at=1+tn;if(!decodeValue(L,payload,at,0)){lua_settop(L,0);continue;}lua_pushstring(L,from.c_str());
-     startBudget(a);a.timerRunning=true;const int status=protectedCall(L,2,0);a.timerRunning=false;stopBudget(a);
+     startBudget(a,"message");a.timerRunning=true;const int status=protectedCall(L,2,0);a.timerRunning=false;stopBudget(a);
      if(status!=LUA_OK)failure(a,"addons message handler failed");else{commitAiChanges(a);commitSettings(a);lua_settop(L,0);}}
    }
   }
  }
+ // profile.begin(name) / profile.finish(name) / profile.scope(name, fn, ...): the addon's own timed scopes in the
+ // runtime profiler's log (name 1..48 bytes; scopes may nest, at most 16 open). scope returns fn's results.
+ static void closeScope(Addon& a,size_t index){
+  const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-a.scopes[index].second).count();
+  auto& b=a.profile["scope "+a.scopes[index].first];++b.calls;b.ms+=ms;b.worst=(std::max)(b.worst,ms);a.scopes.erase(a.scopes.begin()+std::ptrdiff_t(index));
+ }
+ static int profileBegin(lua_State* L){
+  auto a=context(L);size_t n=0;const char* name=luaL_checklstring(L,1,&n);if(!n||n>48)return luaL_error(L,"profile.begin name must be 1..48 bytes");
+  if(!profiling){lua_pushboolean(L,0);return 1;}if(a->scopes.size()>=16)return luaL_error(L,"profile.begin: at most 16 open scopes");
+  a->scopes.push_back({std::string(name,n),std::chrono::steady_clock::now()});lua_pushboolean(L,1);return 1;
+ }
+ static int profileFinish(lua_State* L){
+  auto a=context(L);const std::string name=luaL_checkstring(L,1);
+  for(size_t i=a->scopes.size();i-->0;)if(a->scopes[i].first==name){closeScope(*a,i);lua_pushboolean(L,1);return 1;}
+  lua_pushboolean(L,0);return 1;
+ }
+ static int profileScope(lua_State* L){
+  auto a=context(L);size_t n=0;const char* name=luaL_checklstring(L,1,&n);luaL_checktype(L,2,LUA_TFUNCTION);if(!n||n>48)return luaL_error(L,"profile.scope name must be 1..48 bytes");
+  const int base=lua_gettop(L);const auto start=std::chrono::steady_clock::now();
+  lua_call(L,base-2,LUA_MULTRET);
+  if(profiling){const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();auto& b=a->profile["scope "+std::string(name,n)];++b.calls;b.ms+=ms;b.worst=(std::max)(b.worst,ms);}
+  return lua_gettop(L)-1;
+ }
+ // The profiler's text: for the window since the last call (summary) and since the start (report). Clears the window.
+ public:void profileText(std::string& summary,std::string& report,double windowSeconds){
+  char line[512];
+  snprintf(line,sizeof line,"== Lua addons, last %.0f s ==\r\n",windowSeconds);summary+=line;
+  auto block=[&](std::string& out,const Addon& a,const std::map<std::string,ProfileBucket>& buckets,const std::unordered_map<std::string,uint64_t>& hot,uint64_t calls,double seconds){
+   double ms=0;uint64_t n=0,ins=0;for(const auto& [k,b]:buckets){ms+=b.ms;n+=b.calls;ins+=b.instructions;}
+   snprintf(line,sizeof line,"%s%s: %.2f ms in %llu calls (%.3f ms/s), %llu kinstr, memory %.1f KiB (peak %.1f KiB), %llu game calls\r\n",a.id.c_str(),a.enabled?"":" (disabled)",
+    ms,(unsigned long long)n,seconds>0?ms/seconds:0.0,(unsigned long long)(ins/1000),double(a.bytes)/1024.0,double(a.peakBytes)/1024.0,(unsigned long long)calls);out+=line;
+   std::vector<std::pair<std::string,ProfileBucket>> rows(buckets.begin(),buckets.end());
+   std::sort(rows.begin(),rows.end(),[](const auto& x,const auto& y){return x.second.ms>y.second.ms;});
+   for(const auto& [k,b]:rows){snprintf(line,sizeof line,"   %-34s %8llu calls %9.2f ms  avg %7.3f  worst %7.3f ms  %8llu kinstr\r\n",k.c_str(),(unsigned long long)b.calls,b.ms,b.calls?b.ms/double(b.calls):0.0,b.worst,(unsigned long long)(b.instructions/1000));out+=line;}
+   std::vector<std::pair<std::string,uint64_t>> lines(hot.begin(),hot.end());
+   std::sort(lines.begin(),lines.end(),[](const auto& x,const auto& y){return x.second>y.second;});
+   for(size_t i=0;i<lines.size()&&i<8;++i){snprintf(line,sizeof line,"   hot  %-40s %llu samples (x10k instructions)\r\n",lines[i].first.c_str(),(unsigned long long)lines[i].second);out+=line;}
+  };
+  static double totalSeconds=0;totalSeconds+=windowSeconds;
+  snprintf(line,sizeof line,"== Lua addons, since start (%.0f s) ==\r\n",totalSeconds);report+=line;
+  for(auto& owned:addons){auto& a=*owned;
+   block(summary,a,a.profile,a.hotLines,a.gameCalls,windowSeconds);
+   for(const auto& [k,b]:a.profile){auto& t=a.profileTotal[k];t.calls+=b.calls;t.ms+=b.ms;t.worst=(std::max)(t.worst,b.worst);t.instructions+=b.instructions;}
+   for(const auto& [k,v]:a.hotLines)if(a.hotTotal.size()<8192||a.hotTotal.count(k))a.hotTotal[k]+=v;
+   a.gameCallsTotal+=a.gameCalls;a.profile.clear();a.hotLines.clear();a.gameCalls=0;
+   block(report,a,a.profileTotal,a.hotTotal,a.gameCallsTotal,totalSeconds);
+  }
+ }
+ private:
  static int setMark(lua_State* L){
   auto a=context(L);if(!(a->caps&characterMarks)||!(a->owner->available&characterMarks))return luaL_error(L,"characters.marks unavailable");
   Mark m;readTarget(L,1,"characters.set_mark",m.player,m.record,m.handle);
@@ -527,7 +586,7 @@ private:
   readTarget(L,1,name,s.player,s.record,s.handle);
   a->body.erase(std::remove_if(a->body.begin(),a->body.end(),[&](const BodyScale& x){return x.player==s.player&&x.record==s.record&&x.handle==s.handle&&x.field==s.field;}),a->body.end());
   if(lua_isnoneornil(L,2)){lua_pushboolean(L,1);return 1;}
-  const double low=strength?0.25:0.5,high=strength?3.0:2.0;const double f=luaL_checknumber(L,2);
+  const double low=strength?0.25:(s.player?0.5:0.02),high=strength?3.0:2.0;const double f=luaL_checknumber(L,2);
   if(!std::isfinite(f)||f<low||f>high)return luaL_error(L,"%s factor is %g..%g",name,low,high);
   if(f!=1.0){if(a->body.size()>=64)return luaL_error(L,"%s: at most 64 targets per addon",name);s.factor=float(f);a->body.push_back(s);}
   lua_pushboolean(L,1);return 1;
@@ -1191,15 +1250,26 @@ private:
   void* next=std::realloc(ptr,size);if(next)a->bytes=a->bytes-old+size;
   return next;
  }
- static void budget(lua_State* L,lua_Debug*){
+ static void budget(lua_State* L,lua_Debug* ar){
   auto a=context(L);a->instructions-=1000;
+  // Every 10,000 instructions: where the addon is, for the profiler's hot lines.
+  if(profiling&&(a->instructions%10000)==0&&ar&&lua_getinfo(L,"Sl",ar)&&a->hotLines.size()<4096){
+   char key[96];snprintf(key,sizeof key,"%s:%d",ar->short_src,ar->currentline);++a->hotLines[key];}
   if(a->instructions<=0){
    // A tasks.run job pauses here and goes on at the next pulse; anything else stops with an error.
    if(a->taskRunning&&lua_isyieldable(L)){lua_yield(L,0);return;}
    lua_sethook(L,budget,LUA_MASKCOUNT,1);luaL_error(L,"addon instruction budget exceeded");}
  }
- static void startBudget(Addon& a){a.logs=0;a.storageOps=0;a.worldOps=0;a.characterOps=0;a.containerReads=0;a.inventoryReads=0;a.statsReads=0;a.nativeCalls.clear();a.aiChanges.clear();a.containerChanges.clear();a.inventoryChanges.clear();++a.execution;a.instructions=100000;lua_sethook(a.state,budget,LUA_MASKCOUNT,1000);}
- static void stopBudget(Addon& a){lua_sethook(a.state,nullptr,0,0);}
+ static void startBudget(Addon& a,const char* label="callback"){
+  if(profiling){a.profileLabel=label;a.profileStart=std::chrono::steady_clock::now();a.profileOpen=true;}a.budgetGiven=100000;
+  a.logs=0;a.storageOps=0;a.worldOps=0;a.characterOps=0;a.containerReads=0;a.inventoryReads=0;a.statsReads=0;a.nativeCalls.clear();a.aiChanges.clear();a.containerChanges.clear();a.inventoryChanges.clear();++a.execution;a.instructions=100000;lua_sethook(a.state,budget,LUA_MASKCOUNT,1000);}
+ static void stopBudget(Addon& a){
+  lua_sethook(a.state,nullptr,0,0);
+  if(profiling&&a.profileOpen){const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-a.profileStart).count();a.profileOpen=false;
+   auto& b=a.profile[a.profileLabel];++b.calls;b.ms+=ms;b.worst=(std::max)(b.worst,ms);
+   const int used=a.budgetGiven-a.instructions;if(used>0)b.instructions+=uint64_t(used);
+   a.peakBytes=(std::max)(a.peakBytes,a.bytes);a.gameCalls+=a.nativeCalls.size();}
+ }
  // tasks.run(fn): fn runs as a task that is paused whenever it uses its instruction budget and resumed at the next
  // pulse with a fresh one (taskBudget), so a long job (level generation) finishes over several frames instead of
  // failing. It may also pause itself with coroutine.yield(). A task runs like a timer callback (the same APIs work
@@ -1384,6 +1454,7 @@ private:
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"snapshot");
   lua_pushboolean(L,1);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"awareness");lua_pushcfunction(L,grantPowers);lua_setfield(L,-2,"grant_powers");lua_pushcfunction(L,setMark);lua_setfield(L,-2,"set_mark");lua_pushcfunction(L,setDamageScale);lua_setfield(L,-2,"set_damage_scale");lua_pushcfunction(L,setHitSound);lua_setfield(L,-2,"set_hit_sound");lua_pushcfunction(L,setLimbStrength);lua_setfield(L,-2,"set_limb_strength");lua_pushboolean(L,1);lua_pushcclosure(L,setBodyScale,1);lua_setfield(L,-2,"set_strength");lua_pushboolean(L,0);lua_pushcclosure(L,setBodyScale,1);lua_setfield(L,-2,"set_anim_rate");lua_setglobal(L,"characters");
   lua_newtable(L);lua_pushcfunction(L,spawnArc);lua_setfield(L,-2,"spawn_arc");lua_setglobal(L,"effects");
+  lua_newtable(L);lua_pushcfunction(L,profileBegin);lua_setfield(L,-2,"begin");lua_pushcfunction(L,profileFinish);lua_setfield(L,-2,"finish");lua_pushcfunction(L,profileScope);lua_setfield(L,-2,"scope");lua_setglobal(L,"profile");
   lua_newtable(L);lua_pushcfunction(L,sendMessage);lua_setfield(L,-2,"send");lua_pushcfunction(L,onMessage);lua_setfield(L,-2,"on");lua_setglobal(L,"addons");
   lua_newtable(L);lua_pushcfunction(L,holdFocus);lua_setfield(L,-2,"hold_focus");lua_pushcfunction(L,spendFocus);lua_setfield(L,-2,"spend_focus");lua_pushcfunction(L,restoreFocus);lua_setfield(L,-2,"restore_focus");lua_pushcfunction(L,teachPower);lua_setfield(L,-2,"teach");lua_pushcfunction(L,openSchool);lua_setfield(L,-2,"open_school");lua_pushcfunction(L,wheelReaction);lua_setfield(L,-2,"wheel");lua_pushcfunction(L,heldFocus);lua_setfield(L,-2,"held_focus");
   lua_pushcfunction(L,readCaster);lua_setfield(L,-2,"caster");lua_pushcfunction(L,holdBindings);lua_setfield(L,-2,"hold_bindings");lua_pushcfunction(L,playGesture);lua_setfield(L,-2,"gesture");lua_setglobal(L,"powers");
@@ -1604,7 +1675,7 @@ public:
   for(auto& a:addons){if(a->id!=owner||!a->enabled)continue;
    for(const auto& h:a->titleHandlers){if(h.first!=label)continue;
     auto L=a->state;if(!lua_checkstack(L,8))return;
-    startBudget(*a);a->timerRunning=true;lua_rawgeti(L,LUA_REGISTRYINDEX,h.second);const int status=protectedCall(L,0,0);a->timerRunning=false;stopBudget(*a);
+    startBudget(*a,"title.row");a->timerRunning=true;lua_rawgeti(L,LUA_REGISTRYINDEX,h.second);const int status=protectedCall(L,0,0);a->timerRunning=false;stopBudget(*a);
     if(status!=LUA_OK)failure(*a,"title row handler failed");else{commitAiChanges(*a);commitSettings(*a);lua_settop(L,0);}
     return;}
   }
@@ -1652,7 +1723,7 @@ public:
    }
   }
   a->state=lua_newstate(allocate,a.get());if(!a->state){lastFailure="Lua allocation failed";return false;}
-  startBudget(*a);lua_pushcfunction(a->state,initialize);
+  startBudget(*a,"load");lua_pushcfunction(a->state,initialize);
   if(protectedCall(a->state,0,0)!=LUA_OK){failure(*a,"initialization failed");return false;}
   const std::string chunk="@"+id;
   if(luaL_loadbufferx(a->state,source,size,chunk.c_str(),"t")!=LUA_OK||protectedCall(a->state,0,0)!=LUA_OK){failure(*a,"addon load failed");return false;}
@@ -1682,7 +1753,7 @@ public:
   for(auto& a:addons){if(!a->enabled||(!only.empty()&&a->id!=only))continue;
    for(const auto& handler:a->handlers){if(handler.kind!=Kind::lifecycle)continue;
     auto L=a->state;if(!lua_checkstack(L,8)){a->enabled=false;break;}
-    startBudget(*a);lua_pushcfunction(L,invokeLifecycle);lua_pushinteger(L,handler.ref);
+    startBudget(*a,"runtime.phase");lua_pushcfunction(L,invokeLifecycle);lua_pushinteger(L,handler.ref);
     lua_pushlstring(L,phase.data(),phase.size());lua_pushinteger(L,static_cast<lua_Integer>(generation));
     const int status=protectedCall(L,3,0);stopBudget(*a);
     if(status!=LUA_OK){failure(*a,"runtime.phase handler failed");break;}commitSettings(*a);lua_settop(L,0);
@@ -1696,7 +1767,7 @@ public:
    for(size_t i=0;i<a.tasks.size()&&a.enabled;){
     auto L=a.state;if(!lua_checkstack(L,4))break;lua_rawgeti(L,LUA_REGISTRYINDEX,a.tasks[i]);lua_State* co=lua_tothread(L,-1);lua_pop(L,1);
     if(!co){luaL_unref(L,LUA_REGISTRYINDEX,a.tasks[i]);a.tasks.erase(a.tasks.begin()+std::ptrdiff_t(i));continue;}
-    startBudget(a);a.instructions=taskBudget;lua_sethook(co,budget,LUA_MASKCOUNT,1000);a.timerRunning=true;a.taskRunning=true;
+    startBudget(a,"task");a.instructions=taskBudget;a.budgetGiven=taskBudget;lua_sethook(co,budget,LUA_MASKCOUNT,1000);a.timerRunning=true;a.taskRunning=true;
     int results=0;const int status=lua_resume(co,L,0,&results);
     a.taskRunning=false;a.timerRunning=false;lua_sethook(co,nullptr,0,0);stopBudget(a);
     if(status==LUA_YIELD){lua_pop(co,results);commitAiChanges(a);commitSettings(a);++i;continue;}
@@ -1719,7 +1790,7 @@ public:
    if(!lua_checkstack(L,8)){if(!timer.interval)luaL_unref(L,LUA_REGISTRYINDEX,timer.reference);clearTimers(a);a.enabled=false;report(a.id.c_str(),"error","Lua timer stack exhausted");continue;}
    lua_rawgeti(L,LUA_REGISTRYINDEX,timer.reference);
    if(!timer.interval)luaL_unref(L,LUA_REGISTRYINDEX,timer.reference);
-   startBudget(a);a.timerRunning=true;const int status=protectedCall(L,0,0);a.timerRunning=false;stopBudget(a);
+   startBudget(a,"timer");a.timerRunning=true;const int status=protectedCall(L,0,0);a.timerRunning=false;stopBudget(a);
    ++callbacks;timerCursor=(index+1)%count;
    if(status!=LUA_OK)failure(a,"timer callback failed");else{commitAiChanges(a);commitSettings(a);lua_settop(L,0);}
   }
@@ -1743,7 +1814,7 @@ public:
     auto L=a->state;bool failed=false;
     for(const auto& item:items){
      if(!lua_checkstack(L,8)){a->enabled=false;failed=true;break;}
-     startBudget(*a);lua_pushcfunction(L,invoker);lua_pushinteger(L,handler.ref);lua_pushlightuserdata(L,const_cast<T*>(&item));
+     startBudget(*a,where);lua_pushcfunction(L,invoker);lua_pushinteger(L,handler.ref);lua_pushlightuserdata(L,const_cast<T*>(&item));
      const int status=protectedCall(L,2,0);stopBudget(*a);
      if(status!=LUA_OK){failure(*a,where);failed=true;break;}commitSettings(*a);lua_settop(L,0);
     }
@@ -1761,7 +1832,7 @@ public:
    for(const auto& handler:a->handlers){if(handler.kind!=Kind::setting)continue;
     auto L=a->state;bool failed=false;
     for(const auto& c:changes){if(!lua_checkstack(L,8)){a->enabled=false;failed=true;break;}
-     startBudget(*a);a->timerRunning=true;lua_pushcfunction(L,invokeSetting);lua_pushinteger(L,handler.ref);lua_pushlightuserdata(L,const_cast<SettingChange*>(&c));
+     startBudget(*a,"settings.changed");a->timerRunning=true;lua_pushcfunction(L,invokeSetting);lua_pushinteger(L,handler.ref);lua_pushlightuserdata(L,const_cast<SettingChange*>(&c));
      const int status=protectedCall(L,2,0);a->timerRunning=false;stopBudget(*a);
      if(status!=LUA_OK){failure(*a,"settings.changed handler failed");failed=true;break;}commitAiChanges(*a);commitSettings(*a);lua_settop(L,0);}
     if(failed||!a->enabled)break;
@@ -1822,7 +1893,7 @@ public:
   for(auto& a:addons){if(!a->enabled)continue;
    for(const auto& handler:a->handlers){if(handler.kind!=Kind::gear)continue;
     auto L=a->state;if(!lua_checkstack(L,8)){a->enabled=false;break;}
-    a->gear=&event;a->token=++token;a->gearPending={};startBudget(*a);
+    a->gear=&event;a->token=++token;a->gearPending={};startBudget(*a,"gear.use");
     lua_pushcfunction(L,invokeGear);lua_pushinteger(L,handler.ref);
     const int status=protectedCall(L,1,1);stopBudget(*a);a->gear=nullptr;
     if(status!=LUA_OK){a->gearPending={};failure(*a,"gear.use handler failed");break;}
@@ -1837,7 +1908,7 @@ public:
    for(const auto& handler:a->handlers){if(handler.kind!=Kind::item||handler.model!=event.model)continue;
     auto L=a->state;
     if(!lua_checkstack(L,8)){lastFailure=a->id+": Lua stack exhausted";a->enabled=false;break;}
-    a->event=&event;a->token=++token;a->pending=Action::none;a->itemRestore={};a->consumePending=false;startBudget(*a);
+    a->event=&event;a->token=++token;a->pending=Action::none;a->itemRestore={};a->consumePending=false;startBudget(*a,"item.use");
     lua_pushcfunction(L,invoke);lua_pushinteger(L,handler.ref);
     const int status=protectedCall(L,1,1);stopBudget(*a);a->event=nullptr;
     if(status!=LUA_OK){a->itemRestore={};a->consumePending=false;failure(*a,"item.use handler failed");break;}

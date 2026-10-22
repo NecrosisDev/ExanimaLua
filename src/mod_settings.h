@@ -86,7 +86,8 @@ static std::string effective(const Values& v,const Section& s,const SettingDef& 
  const auto o=v.find(s.owner);if(o!=v.end()){const auto k=o->second.find(d.key);if(k!=o->second.end())return k->second;}return d.fallback;
 }
 static void applyRuntime(const Values& v){const auto* s=section("runtime");if(!s)return;
- for(const auto& d:s->defs)if(d.key=="console_key"){const int k=std::atoi(effective(v,*s,d).c_str());console::toggleKey=unsigned(k>0&&k<255?k:0);}}
+ for(const auto& d:s->defs){if(d.key=="console_key"){const int k=std::atoi(effective(v,*s,d).c_str());console::toggleKey=unsigned(k>0&&k<255?k:0);}
+  if(d.key=="profiler")scripting::Host::profiling=effective(v,*s,d)!="false";}}
 static bool readSetting(const std::string& owner,const std::string& key,std::string& value){
  std::lock_guard<std::recursive_mutex> g(lock);const auto* s=section(owner);if(!s)return false;
  for(const auto& d:s->defs)if(d.key==key){value=effective(committed,*s,d);return true;}return false;
@@ -206,7 +207,8 @@ static void start(const std::filesystem::path& control){
  activeProfile=validProfile(narrow(name))?narrow(name):"Default";committed=readProfile(activeProfile);
  // The console key's default is the ini's own [console] key (0 = unbound until the player picks one).
  SettingDef key;key.key="console_key";key.label="Console key";key.help="Opens the console of mod messages and errors";key.type="key";key.fallback=std::to_string(console::toggleKey);
- sections.push_back({"runtime","Lua runtime",{key},{},false});
+ SettingDef profiler;profiler.key="profiler";profiler.label="Profiler";profiler.help="Logs each Lua mod's cost to the runtime's profiler folder every 30 seconds";profiler.type="toggle";profiler.fallback="true";
+ sections.push_back({"runtime","Lua runtime",{key,profiler},{},false});
  std::error_code e;const auto mods=control.parent_path();
  for(const auto& folder:std::filesystem::directory_iterator(mods,e)){const auto toml=folder.path()/L"config.toml";if(!folder.is_directory(e)||!std::filesystem::is_regular_file(toml,e))continue;
   std::string plugin;const auto entries=nativeEntries(toml,plugin);if(entries.empty())continue;Section s;s.owner="native:"+narrow(folder.path().filename().wstring());

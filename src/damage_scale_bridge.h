@@ -214,7 +214,10 @@ static void pulse(scripting::Host& owner,bool enabled,bool session){
   float now=0;if(!readFloat(d.character+offsets[d.field],now))continue;
   Held* h=nullptr;for(auto& x:held)if(x.character==d.character&&x.field==d.field)h=&x;
   if(!h){if(held.size()>=128)continue;held.push_back({d.character,d.field,now,now,1});h=&held.back();}
-  else if(std::memcmp(&now,&h->written,4)!=0)h->base=now;   // the game wrote it: that is the new base
+  else if(std::memcmp(&now,&h->written,4)!=0){
+   // The game wrote it. A knockdown's recovery adds 0.01 a tick to the animation rate (0x156b20): a small rise is that
+   // ramp and moves the base by the same step; anything else is the game's new base.
+   if(d.field==1&&now>h->written&&now-h->written<0.3f)h->base+=now-h->written;else h->base=now;}
   h->factor=d.factor;const float want=h->base*d.factor;
   if(std::memcmp(&now,&want,4)==0){h->written=want;continue;}
   if(writeFloat(d.character+offsets[d.field],want))h->written=want;
