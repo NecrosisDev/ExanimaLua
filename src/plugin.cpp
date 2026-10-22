@@ -90,7 +90,7 @@ static bool addPlacement(const std::string& owner,const std::string& level,uint3
  if(!placements::add(p))return false;memberreads::edit=editMember;memberreads::wants=editWants;return true;
 }
 static uint64_t sharedCapabilities(){return scripting::modSettings|(npcpowers::possible&&charactersPossible?scripting::characterPowers:0)|(sounds::possible&&worldPossible?scripting::uiSound:0)|(titlerows::ready?scripting::titleRows:0)|(memberreads::ready?scripting::levelsServe:0)|
- (worldPossible&&charactersPossible&&nativecalls::damagePossible?scripting::playerDamage|scripting::charactersDamage:0)|(worldPossible&&charactersPossible?scripting::characterMarks|scripting::damageScale:0)|(worldPossible&&charactersPossible&&nativecalls::pushPossible?scripting::playerPush:0)|
+ (worldPossible&&charactersPossible&&nativecalls::damagePossible?scripting::playerDamage|scripting::charactersDamage:0)|(worldPossible&&charactersPossible?scripting::characterMarks|scripting::damageScale:0)|(hitSoundPossible?scripting::hitSound:0)|(worldPossible&&charactersPossible?scripting::limbStrength:0)|(hitSoundPossible?scripting::bodyScale:0)|(powers::arcPossible&&worldPossible?scripting::effectsArc:0)|(worldPossible&&charactersPossible&&nativecalls::pushPossible?scripting::playerPush:0)|
  (worldPossible&&nativecalls::drivePossible?scripting::levelsDrive:0)|(gear::installed&&itemstats::lookup?scripting::gearUse:0)|(gear::restorePossible?scripting::itemsCondition|scripting::itemsWear:0)|
  scripting::uiNotify|(newgame::possible&&titlerows::ready&&nativecalls::travelPossible?scripting::levelsFlow:0)|(worldPossible&&nativecalls::placePossible?scripting::playerPlace:0)|(!sharedlua::modsDirectory.empty()?scripting::assetsRead:0);}
 static bool worldMutationsIdle(){return worldemitters::idle()&&worlddevices::idle();}
@@ -203,7 +203,7 @@ static void refresh(bool session){
  if(session&&!wanted.empty()){const auto roster=captureCharacters();
   if(roster&&roster->ready)for(const auto& m:wanted)for(const auto& c:roster->characters){
    if(n>=64)break;if(!c.nativeCharacter||(c.stateKnown&&c.dead))continue;
-   if(m.player?!(c.playerKnown&&c.player):(c.record!=m.record))continue;
+   if(!scripting::targets(m,c))continue;
    uintptr_t node=0;if(!copyWorldMemory(c.nativeCharacter+0x18,&node,8)||!node)continue;
    next[n].node=node;next[n].value=m.value;std::memcpy(next[n].name,m.name,32);++n;}
  }
@@ -244,7 +244,7 @@ static void pumpPresentation(uint64_t thread,uint64_t windowThread,const std::st
  }
  combat::deliver(host,captureCharacters());zones::deliver(host,captureCharacters());scriptcommands::deliver(host,worldPulse);gamemessages::deliver(host);
  sharedlua::deliver(host);memberreads::deliver(host);gear::deliver(host);modsettings::deliver(host);sounds::deliver(host);gestures::deliver(host);itemids::deliver(host);recordmerge::deliver(host);npcpowers::deliver(host,captureCharacters());dialogs::deliver();powers::deliver(host);powers::step(host,phase);
- marks::refresh(worldPulse);damagescale::refresh(host,worldPulse);
+ marks::refresh(worldPulse);damagescale::refresh(host,worldPulse);hitsound::pulse(hitSoundPossible?host.hitMaterial():-1,worldPulse);limbs::refresh(host,worldPulse);bodyscale::pulse(host,hitSoundPossible,worldPulse);
  tickBoosts(host,worldPulse&&!boosts.empty()?captureCharacters():nullptr,worldPulse,now);
  {const auto start=frametime::stamp();session.tickTimers();const double d=frametime::since(start);frametime::lua+=d;frametime::luaWorst=(std::max)(frametime::luaWorst,d);}
  host.flushSettings();
@@ -273,7 +273,7 @@ static bool start(){
  if(nativePossible)newgame::available();if(!controlDirectory.empty())sharedlua::modsDirectory=controlDirectory.parent_path();
  if(!controlDirectory.empty()){console::readSettings(controlDirectory/L"ScriptRuntime.ini");console::startTailing(controlDirectory.parent_path());}
  if(nativePossible&&frameReady&&hookLibrary()&&!settingstabs::ready){const auto why=settingstabs::available();if(!why.empty())host.report("runtime","warn",("Mod Settings tab unavailable: "+why).c_str());}
- titlerows::formOpen=settingstabs::optionsOpen;scripting::Host::subtitleSetter=titlerows::setSubtitle;modsettings::start(controlDirectory);
+ hitSoundPossible=worldPossible&&charactersPossible&&readable(base+0x4f0940,56)&&readable(base+0x4f0830,8);titlerows::formOpen=settingstabs::optionsOpen;scripting::Host::subtitleSetter=titlerows::setSubtitle;modsettings::start(controlDirectory);
  if(nativePossible&&!sounds::possible&&!controlDirectory.empty()){sounds::available(controlDirectory.parent_path().parent_path());if(!sounds::possible)host.report("runtime","warn","ui.sound unavailable: Sound.rpk index or the sound functions did not match");}
  host.setSharedApi({sharedlua::addRow,sharedlua::removeRow,sharedlua::enableRow,sharedlua::serve,sharedlua::clearServed,forgetShared,newgame::arm,sharedlua::readAsset,console::notify,
   modsettings::defineSettings,modsettings::readSetting,sounds::request,addPlacement,gestures::request,gear::queueWear,npcpowers::request,dialogs::request});
@@ -452,6 +452,9 @@ extern "C" __declspec(dllexport) int settings_tab_host_title(int tab,wchar_t* ou
 extern "C" __declspec(dllexport) int settings_tab_host_rows(int tab,int page,settingstabs::Row* out,int capacity){return settingstabs::hostedRows(tab,page,out,capacity);}
 extern "C" __declspec(dllexport) void settings_tab_host_change(int tab,int page,int id,int kind,int delta,float position,int checked,int key){settingstabs::hostedChange(tab,page,id,kind,delta,position,checked,key);}
 extern "C" __declspec(dllexport) uint32_t character_marks_version(){return 1;}
+// Weapon hits on character parts (combat_bridge.h recordHit), oldest first, with serial > `after`.
+extern "C" __declspec(dllexport) uint32_t character_hits_version(){return 2;}
+extern "C" __declspec(dllexport) int character_hits(uint32_t after,combat::HitRecord* out,int capacity){return combat::readHits(after,out,capacity);}
 // Fills up to `capacity` (node, value) pairs for marks called `name`; returns how many. Any thread; no lock, no
 // game memory read, no allocation. A node may belong to a character that left the level since the last pulse.
 extern "C" __declspec(dllexport) int character_mark_nodes(const char* name,uintptr_t* nodes,uint32_t* values,int capacity){

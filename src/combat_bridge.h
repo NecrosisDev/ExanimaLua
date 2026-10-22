@@ -15,8 +15,41 @@ struct Strike {uintptr_t attacker=0;uint32_t weapon=0;int part=-1;uint32_t struc
 static thread_local Strike striking;
 static SRWLOCK queueLock=SRWLOCK_INIT;
 static std::array<Hit,64> queue;static size_t queued=0,lost=0;
+// character_hits (v1): every weapon hit on a character part, for other mods (ExCamera's wound marks), recorded here
+// whether or not an addon listens. Copies only: the struck part (attacker +0xc20, part index +0x468 0..17), the
+// contact point (attacker +0xc28), the part's pose (part +0x2a0, three axes then the origin), the weapon body's
+// motion (attacker +0xc38: mean of +0xf0 minus mean of +0x120, 4x3 floats each), the motion kind (+0x9b8 == 0xb
+// thrust). A 64-entry ring under its own lock; readers copy by serial.
+// v2 appends the attacker's weapon body (attacker +0xc38) and reports cut (1) or crush (2) when the runtime's
+// damage-computation hooks saw the kinds of this hit (damagescale::onKinds, same thread, just before).
+struct HitRecord {uint32_t size=0,serial=0;uint64_t victim=0,part=0;float point[3]{},direction[3]{};float pose[12]{};float health=0,balance=0;uint32_t kind=0,reserved=0;uint64_t weapon=0;};
+static_assert(sizeof(HitRecord)==0x78);
+struct SeenKinds {uintptr_t victim=0;float cut=0,crush=0;bool fresh=false;};static thread_local SeenKinds seenKinds;
+static std::atomic<bool> hitsRead{false};
+static SRWLOCK hitsLock=SRWLOCK_INIT;static std::array<HitRecord,64> hits;static uint32_t hitSerial=0;
+static void recordHit(uintptr_t victim,uintptr_t attacker,float balance,float health){
+ if(!attacker)return;HitRecord r;r.size=sizeof r;r.victim=victim;r.health=health;r.balance=balance;
+ uintptr_t part=0;int32_t index=-1;
+ if(!copyWorldMemory(attacker+0xc20,&part,8)||!part||!copyWorldMemory(part+0x468,&index,4)||index<0||index>=18)return;
+ r.part=part;if(!copyWorldMemory(attacker+0xc28,r.point,12)||!copyWorldMemory(part+0x2a0,r.pose,48))return;
+ uintptr_t weapon=0;float now[12]{},before[12]{};
+ if(copyWorldMemory(attacker+0xc38,&weapon,8)&&weapon&&copyWorldMemory(weapon+0xf0,now,48)&&copyWorldMemory(weapon+0x120,before,48))
+  for(int axis=0;axis<3;++axis){float a=0,b=0;for(int k=0;k<4;++k){a+=now[k*3+axis];b+=before[k*3+axis];}r.direction[axis]=(a-b)*0.25f;}
+ r.weapon=weapon;
+ uint32_t motion=0;if(copyWorldMemory(attacker+0x9b8,&motion,4)&&motion==0xb)r.kind=3;
+ else if(seenKinds.fresh&&seenKinds.victim==victim){if(seenKinds.cut>seenKinds.crush&&seenKinds.cut>0)r.kind=1;else if(seenKinds.crush>0)r.kind=2;}
+ seenKinds.fresh=false;
+ AcquireSRWLockExclusive(&hitsLock);r.serial=++hitSerial;hits[(r.serial-1)%hits.size()]=r;ReleaseSRWLockExclusive(&hitsLock);
+}
+static int readHits(uint32_t after,HitRecord* out,int capacity){
+ hitsRead=true;if(!out||capacity<=0)return 0;AcquireSRWLockShared(&hitsLock);int n=0;const uint32_t last=hitSerial;
+ uint32_t first=last>hits.size()?last-uint32_t(hits.size())+1:1;if(after+1>first)first=after+1;
+ for(uint32_t s=first;s<=last&&n<capacity;++s)out[n++]=hits[(s-1)%hits.size()];
+ ReleaseSRWLockShared(&hitsLock);return n;
+}
 static unsigned char applied(uintptr_t character,float balance,float health,char canFall){
  const auto result=original(character,balance,health,canFall);
+ __try{recordHit(character,striking.attacker,balance,health);}__except(EXCEPTION_EXECUTE_HANDLER){}
  if(listening.load(std::memory_order_relaxed)){
   AcquireSRWLockExclusive(&queueLock);
   if(queued<queue.size())queue[queued++]={character,striking.attacker,balance,health,result!=0,striking.weapon,striking.part,striking.struck};else ++lost;
@@ -89,6 +122,7 @@ static void deliver(scripting::Host& owner,const scripting::CharacterSnapshot* s
  for(const auto& hit:hits){
   const scripting::Character* victim=hit.character?find(*snapshot,hit.character):(player&&playerHolds(hit.struck)?player:nullptr);if(!victim)continue;
   scripting::CombatHit event{victim->record,victim->name,victim->player&&victim->playerKnown,hit.downed,hit.health,hit.balance};
+  event.handle=uint64_t(victim->nativeCharacter);event.attackerHandle=uint64_t(hit.attacker);
   // A shield (chunk 0x8000) or a weapon (0x4000) of the victim's own took the blow: blocked or parried.
   if(hit.struck&&(!victim->player||playerHolds(hit.struck))){
    if(inventorybridge::chunk(hit.struck,0x8000)){event.blocked=true;event.shield=hit.struck;}

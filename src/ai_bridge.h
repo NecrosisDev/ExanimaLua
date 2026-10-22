@@ -29,19 +29,6 @@ static bool readAiConstants(hot::AiConstants& k){
   copyWorldMemory(base+0x30a1a0,&k.three,4)&&copyWorldMemory(base+0x30a328,&k.eighth,4)&&
   copyWorldMemory(base+0x30a490,&k.third,8)&&hot::aiConstantsOk(k);
 }
-// Each pulse: boosts that lapsed, whose character left or died, whose addon is gone, or that outlived the session
-// get their saved fields back, only while the same scene is loaded and the character is still that character.
-static void tickBoosts(scripting::Host& owner,const scripting::CharacterSnapshot* roster,bool session,uint64_t now){
- if(boosts.empty())return;const scripting::CharacterMemory memory{copyWorldMemory};uintptr_t scene=0;copyWorldMemory(base+0x49b300,&scene,8);
- for(auto it=boosts.begin();it!=boosts.end();){
-  bool alive=false;if(session&&roster&&roster->ready)for(const auto& c:roster->characters)if(c.nativeCharacter==it->target.character)alive=!(c.stateKnown&&c.dead);
-  const bool keep=session&&alive&&now<it->until&&owner.enabled(it->owner);
-  if(keep){++it;continue;}
-  if(scene&&scene==it->scene&&scripting::targetIdentity(memory,base,it->target))
-   for(size_t k=0;k<it->address.size();++k)if(writableAiFloat(it->address[k]))aiWriter(it->address[k],it->saved[k]);
-  it=boosts.erase(it);
- }
-}
 static void beginAiPulse(const std::string& phase,uint64_t now){
  aiTargets.clear();aiPulseReady=false;
  if(phase!="session"||(!aiWritePossible&&!attitudeWritePossible&&!containerWritePossible&&!inventoryWritePossible)){aiWorld=aiPlayer=aiScene=0;return;}
@@ -97,8 +84,13 @@ static bool commitAi(const std::vector<scripting::AiChange>& changes){
   Prepared next;next.target=*target;
   if(!scripting::targetIdentity(memory,base,*target)||(!change.ai&&!change.hostility&&!change.concern))return false;
   if(change.ai){
-   hot::AiConstants constants{};std::array<float,6> values{};
-   if(!aiWritePossible||!readAiConstants(constants)||!scripting::prepareAi(memory,base,*target,change.values,constants,values))return false;
+   hot::AiConstants constants{};std::array<float,6> values{};if(!aiWritePossible||!readAiConstants(constants))return false;
+   // boost_ai without attribute2/attribute3: the inverse of aiCompute's a2 = attr2/100 (+0x1c4) and a3 = -attr3/100
+   // (+0x1c8) on the NPC's stored fields.
+   auto input=change.values;float stored=0;
+   if(change.keepAttribute2){if(!memory.get(target->ai+hot::aiOffsets[1],stored)||!std::isfinite(stored))return false;input.attribute2=double(stored)/constants.hundredth;}
+   if(change.keepAttribute3){if(!memory.get(target->ai+hot::aiOffsets[2],stored)||!std::isfinite(stored))return false;input.attribute3=-double(stored)/constants.hundredth;}
+   if(!scripting::prepareAi(memory,base,*target,input,constants,values))return false;
    for(size_t i=0;i<hot::aiOffsets.size();++i)next.fields.push_back({target->ai+hot::aiOffsets[i],values[i]});
   }
   if(change.hostility||change.concern){
@@ -151,4 +143,17 @@ static bool commitAi(const std::vector<scripting::AiChange>& changes){
   else boosts.erase(std::remove_if(boosts.begin(),boosts.end(),[&](const Boost& b){return b.target.character==target->character;}),boosts.end());
  }
  invalidateCharacterCopies();return true;
+}
+// Each pulse: boosts that lapsed, whose character left or died, whose addon is gone, or that outlived the session
+// get their saved fields back, only while the same scene is loaded and the character is still that character.
+static void tickBoosts(scripting::Host& owner,const scripting::CharacterSnapshot* roster,bool session,uint64_t now){
+ if(boosts.empty())return;const scripting::CharacterMemory memory{copyWorldMemory};uintptr_t scene=0;copyWorldMemory(base+0x49b300,&scene,8);
+ for(auto it=boosts.begin();it!=boosts.end();){
+  bool alive=false;if(session&&roster&&roster->ready)for(const auto& c:roster->characters)if(c.nativeCharacter==it->target.character)alive=!(c.stateKnown&&c.dead);
+  const bool keep=session&&alive&&now<it->until&&owner.enabled(it->owner);
+  if(keep){++it;continue;}
+  if(scene&&scene==it->scene&&scripting::targetIdentity(memory,base,it->target))
+   for(size_t k=0;k<it->address.size();++k)if(writableAiFloat(it->address[k]))aiWriter(it->address[k],it->saved[k]);
+  it=boosts.erase(it);
+ }
 }

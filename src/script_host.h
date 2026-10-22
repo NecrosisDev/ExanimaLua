@@ -25,7 +25,7 @@
 namespace scripting {
 enum Capability : uint64_t { events=1, items=2, contents=4, openStorage=8, unlockDoor=16, lifecycleEvents=32, timerEvents=64, settingsStorage=128, worldRead=256, charactersRead=512, awarenessRead=1024, aiWrite=2048, attitudeWrite=4096, containerEdit=8192, inventoryRead=16384, inventoryTransfer=32768, equipmentWrite=65536, weaponSwitch=131072, worldPickup=262144, worldDrop=524288, weaponEquip=1048576, inventoryBags=2097152, weaponUnequip=4194304, shieldEquip=8388608, itemsUse=16777216, worldUse=33554432, worldLevers=67108864, worldDoors=134217728, worldTeleporters=268435456, worldDevices=536870912, worldSpawn=1073741824, combatEvents=2147483648u, worldTime=uint64_t(1)<<32, saveData=uint64_t(1)<<33, scriptEvents=uint64_t(1)<<34, scriptFlags=uint64_t(1)<<35,
  itemStats=uint64_t(1)<<36, zoneEvents=uint64_t(1)<<37, gameMessages=uint64_t(1)<<38, titleRows=uint64_t(1)<<39, levelsServe=uint64_t(1)<<40, playerDamage=uint64_t(1)<<41, playerPush=uint64_t(1)<<42, levelsDrive=uint64_t(1)<<43,
- powerCast=uint64_t(1)<<44, focusHold=uint64_t(1)<<45, worldLights=uint64_t(1)<<46, gearUse=uint64_t(1)<<47, itemsCondition=uint64_t(1)<<48, levelsFlow=uint64_t(1)<<49, assetsRead=uint64_t(1)<<50, playerPlace=uint64_t(1)<<51, uiNotify=uint64_t(1)<<52, modSettings=uint64_t(1)<<53, uiSound=uint64_t(1)<<54, itemsWear=uint64_t(1)<<55, characterPowers=uint64_t(1)<<56, charactersDamage=uint64_t(1)<<57, characterMarks=uint64_t(1)<<58, damageScale=uint64_t(1)<<59 };
+ powerCast=uint64_t(1)<<44, focusHold=uint64_t(1)<<45, worldLights=uint64_t(1)<<46, gearUse=uint64_t(1)<<47, itemsCondition=uint64_t(1)<<48, levelsFlow=uint64_t(1)<<49, assetsRead=uint64_t(1)<<50, playerPlace=uint64_t(1)<<51, uiNotify=uint64_t(1)<<52, modSettings=uint64_t(1)<<53, uiSound=uint64_t(1)<<54, itemsWear=uint64_t(1)<<55, characterPowers=uint64_t(1)<<56, charactersDamage=uint64_t(1)<<57, characterMarks=uint64_t(1)<<58, damageScale=uint64_t(1)<<59, hitSound=uint64_t(1)<<60, limbStrength=uint64_t(1)<<61, bodyScale=uint64_t(1)<<62, effectsArc=uint64_t(1)<<63 };
 inline constexpr uint64_t itemApiCapabilities=events|items|contents|openStorage|unlockDoor;
 // The runtime's version as addons see it: api.version is the Lua API generation (unchanged while additions stay
 // compatible), api.revision counts additive releases, so `api.revision >= 24` means "0.24.0 or later".
@@ -43,7 +43,7 @@ inline constexpr CapabilityName capabilityNames[]={
  {"items.stats",itemStats},{"events.zone",zoneEvents},{"events.messages",gameMessages},{"title.rows",titleRows},{"levels.serve",levelsServe},
  {"player.damage",playerDamage},{"player.push",playerPush},{"levels.drive",levelsDrive},
  {"powers.cast",powerCast},{"powers.focus",focusHold},{"world.lights",worldLights},{"events.gear_use",gearUse},{"items.condition",itemsCondition},
- {"levels.flow",levelsFlow},{"assets.read",assetsRead},{"player.place",playerPlace},{"ui.notify",uiNotify},{"ui.settings",modSettings},{"ui.sound",uiSound},{"items.wear",itemsWear},{"characters.powers",characterPowers},{"characters.damage",charactersDamage},{"characters.marks",characterMarks},{"characters.damage_scale",damageScale}};
+ {"levels.flow",levelsFlow},{"assets.read",assetsRead},{"player.place",playerPlace},{"ui.notify",uiNotify},{"ui.settings",modSettings},{"ui.sound",uiSound},{"items.wear",itemsWear},{"characters.powers",characterPowers},{"characters.damage",charactersDamage},{"characters.marks",characterMarks},{"characters.damage_scale",damageScale},{"characters.hit_sound",hitSound},{"characters.limb_strength",limbStrength},{"characters.body",bodyScale},{"effects.arc",effectsArc}};
 inline uint64_t capability(const std::string& name){
  for(const auto& known:capabilityNames)if(name==known.name)return known.bit;
  return 0;
@@ -78,7 +78,7 @@ struct ScriptEvent { std::string name,value;bool numberKnown=false;int32_t numbe
 struct CombatHit {
  uint32_t record=0;std::string name;bool player=false,downed=false;float health=0,balance=0;
  std::string source;bool attacker=false,attackerPlayer=false;uint32_t attackerRecord=0;std::string attackerName;
- uint32_t weapon=0;int part=-1;
+ uint32_t weapon=0;int part=-1;uint64_t handle=0,attackerHandle=0;   // live-character handles (targets)
  bool blocked=false,parried=false;uint32_t shield=0,parryWeapon=0;   // the blow met the victim's shield or weapon
  uint32_t armour=0;   // the player's outermost worn piece covering the struck part
 };
@@ -100,7 +100,7 @@ inline bool sameLight(const LightSpec& a,const LightSpec& b){
  return a.name==b.name&&a.color==b.color&&a.range==b.range&&a.intensity==b.intensity&&a.forward==b.forward&&a.right==b.right&&a.up==b.up&&a.smoothing==b.smoothing&&a.bob==b.bob&&
   a.placed==b.placed&&a.position==b.position&&a.glow==b.glow&&a.glowSize==b.glowSize&&a.glowColor==b.glowColor;
 }
-inline constexpr size_t lightsPerAddon=3;
+inline constexpr size_t lightsPerAddon=5;
 struct OwnedLight { std::string addon;LightSpec light; };
 // The player's thaumaturgy state as the game's own cost rules read it: focus fields, continuous bindings (the
 // Continuity techniques, 0x1d3a80) and the technique flags at +0xc40 that change costs.
@@ -125,10 +125,18 @@ struct GearResult { bool handled=false,restore=false,ignite=false;int wear=-1,di
 struct SettingDef { std::string key,label,type;double minimum=0,maximum=1,step=1;std::vector<std::string> choices;std::string fallback,help; };
 struct SettingChange { std::string key,value; };
 struct IdChange { uint32_t before=0,after=0; };   // item.id_changed
+// A target: one character by its live handle (a characters.read row or a character.hit event), the player, or every
+// live character with a record id.
+template<class T,class C>inline bool targets(const T& w,const C& c){
+ if(w.handle)return uint64_t(c.nativeCharacter)==w.handle;if(w.player)return c.playerKnown&&c.player;return c.record==w.record;}
 // characters.set_mark: a named value on every live character with a record id (or the player) for other mods.
-struct Mark {bool player=false;uint32_t record=0;char name[32]{};uint32_t value=0;};
+struct Mark {bool player=false;uint32_t record=0;uint64_t handle=0;char name[32]{};uint32_t value=0;};
 // characters.set_damage_scale: per-kind multipliers on the damage a character takes (1 = unchanged).
-struct DamageScale {bool player=false;uint32_t record=0;float cut=1,pierce=1,crush=1,impact=1;};
+struct DamageScale {bool player=false;uint32_t record=0;uint64_t handle=0;float cut=1,pierce=1,crush=1,impact=1;};
+// characters.set_limb_strength: a muscle factor (0.05..1) for one body part (1..18, character.hit order).
+struct LimbStrength {bool player=false;uint32_t record=0;uint64_t handle=0;int part=0;float factor=1;};
+// characters.set_strength / set_anim_rate: field 0 motor strength, 1 base animation rate.
+struct BodyScale {bool player=false;uint32_t record=0;uint64_t handle=0;int field=0;float factor=1;};
 struct NativeCall { enum Kind { damage, push, drive, travel, place, damageCharacter } kind=damage;float values[4]{};bool flag=false;uint32_t record=0,state=0;char name[17]{};uintptr_t target=0; };
 class Host {
 public:
@@ -199,7 +207,7 @@ private:
   std::vector<Handler> handlers;TimerQueue timers;
   settings::Cache* settingsData=nullptr;std::unique_ptr<settings::Document> staged;
   std::vector<Module> modules;std::vector<bool> importing;int cache=0,logs=0;
-  std::vector<LightSpec> lights;lua_Number focus=0,spend=0,restore=0;int bindings=0;std::vector<uint32_t> teach;std::vector<uint32_t> wheel;std::vector<Mark> marks;std::vector<DamageScale> scales;uint32_t schools=0;   // teach: Light powers to make known; schools: open_school bits   // bindings: continuous-power slots this addon holds
+  std::vector<LightSpec> lights;lua_Number focus=0,spend=0,restore=0;int bindings=0;std::vector<uint32_t> teach;std::vector<uint32_t> wheel;std::vector<Mark> marks;std::vector<DamageScale> scales;std::vector<LimbStrength> limbs;int hitMaterial=-1;std::vector<BodyScale> body;std::vector<std::pair<std::string,int>> messageHandlers;std::vector<std::pair<std::string,std::string>> inbox;   /* inbox: (from, encoded topic+payload) */ std::vector<std::array<float,4>> arcs;uint32_t schools=0;   // teach: Light powers to make known; schools: open_school bits   // bindings: continuous-power slots this addon holds   // arcs: strands, segments, life, length
   ~Addon(){if(state)lua_close(state);}
  };
  std::vector<std::unique_ptr<Addon>> addons;
@@ -357,7 +365,7 @@ private:
   if(!a->containerChanges.empty())return luaL_error(L,"NPC and container edits require separate callbacks");
   for(auto& previous:a->aiChanges)if(previous.target==change.target){
    if((previous.ai&&change.ai)||(previous.hostility&&change.hostility)||(previous.concern&&change.concern))return luaL_error(L,"NPC field already edited in this callback");
-   if(change.ai){previous.ai=true;previous.values=change.values;previous.boostSeconds=change.boostSeconds;previous.owner=change.owner;}
+   if(change.ai){previous.ai=true;previous.values=change.values;previous.boostSeconds=change.boostSeconds;previous.owner=change.owner;previous.keepAttribute2=change.keepAttribute2;previous.keepAttribute3=change.keepAttribute3;}
    if(change.hostility){previous.hostility=true;previous.hostilityValue=change.hostilityValue;}
    if(change.concern){previous.concern=true;previous.concernValue=change.concernValue;}
    lua_pushboolean(L,1);return 1;
@@ -398,15 +406,77 @@ private:
  }
  // characters.set_mark(target, name, value): target a record_id or "player"; name 1..31 bytes of letters, digits,
  // _ . -; value 0..255 (0 clears). Held until a level change or the addon unloads; at most 32 per addon.
+ // A target argument: "player", a record id, or a table with a `handle` (a characters.read row or a hit event).
+ static void readTarget(lua_State* L,int index,const char* name,bool& player,uint32_t& record,uint64_t& handle){
+  player=false;record=0;handle=0;
+  if(lua_type(L,index)==LUA_TSTRING){if(std::strcmp(lua_tostring(L,index),"player"))luaL_error(L,"%s target is \"player\", a record_id or a row with a handle",name);player=true;return;}
+  if(lua_istable(L,index)){lua_getfield(L,index,"handle");if(!lua_isinteger(L,-1)||lua_tointeger(L,-1)<=0)luaL_error(L,"%s: the row has no handle (use characters.read or a character.hit event)",name);handle=uint64_t(lua_tointeger(L,-1));lua_pop(L,1);return;}
+  const lua_Integer r=luaL_checkinteger(L,index);if(r<=0||r>0xffffffffLL)luaL_error(L,"%s: bad record_id",name);record=uint32_t(r);
+ }
+ // addons.send(target, topic, value) / addons.on(topic, fn): messages between addons. `value` (nil, boolean, number,
+ // string, or a table of those, nested at most 6 deep, 16 KiB encoded) is copied, never shared; `target` is an addon ID
+ // or "*" for every other addon. Delivered at the next pulse to the target's handlers for `topic`, as fn(value, from).
+ // At most 32 messages waiting per receiver; a full inbox refuses (false).
+ static bool encodeValue(lua_State* L,int index,std::string& out,int depth){
+  if(out.size()>16384||depth>6)return false;index=lua_absindex(L,index);
+  switch(lua_type(L,index)){
+   case LUA_TNIL:out+='n';return true;
+   case LUA_TBOOLEAN:out+=lua_toboolean(L,index)?'t':'f';return true;
+   case LUA_TNUMBER:if(lua_isinteger(L,index)){out+='i';const lua_Integer v=lua_tointeger(L,index);out.append((const char*)&v,8);}else{out+='d';const lua_Number v=lua_tonumber(L,index);out.append((const char*)&v,8);}return true;
+   case LUA_TSTRING:{size_t n=0;const char* s=lua_tolstring(L,index,&n);if(n>16384)return false;out+='s';const uint32_t k=uint32_t(n);out.append((const char*)&k,4);out.append(s,n);return true;}
+   case LUA_TTABLE:{if(!lua_checkstack(L,4))return false;out+='{';lua_pushnil(L);
+    while(lua_next(L,index)){const int key=lua_type(L,-2);if(key!=LUA_TSTRING&&key!=LUA_TNUMBER){lua_pop(L,2);return false;}
+     if(!encodeValue(L,-2,out,depth+1)||!encodeValue(L,-1,out,depth+1)){lua_pop(L,2);return false;}lua_pop(L,1);}
+    out+='}';return out.size()<=16384;}
+   default:return false;
+  }
+ }
+ static bool decodeValue(lua_State* L,const std::string& in,size_t& at,int depth){
+  if(at>=in.size()||depth>7||!lua_checkstack(L,4))return false;const char tag=in[at++];
+  switch(tag){
+   case 'n':lua_pushnil(L);return true;case 't':lua_pushboolean(L,1);return true;case 'f':lua_pushboolean(L,0);return true;
+   case 'i':{if(at+8>in.size())return false;lua_Integer v;std::memcpy(&v,in.data()+at,8);at+=8;lua_pushinteger(L,v);return true;}
+   case 'd':{if(at+8>in.size())return false;lua_Number v;std::memcpy(&v,in.data()+at,8);at+=8;lua_pushnumber(L,v);return true;}
+   case 's':{if(at+4>in.size())return false;uint32_t n;std::memcpy(&n,in.data()+at,4);at+=4;if(at+n>in.size())return false;lua_pushlstring(L,in.data()+at,n);at+=n;return true;}
+   case '{':{lua_newtable(L);while(at<in.size()&&in[at]!='}'){if(!decodeValue(L,in,at,depth+1))return false;if(!decodeValue(L,in,at,depth+1))return false;lua_rawset(L,-3);}if(at>=in.size())return false;++at;return true;}
+   default:return false;
+  }
+ }
+ static int sendMessage(lua_State* L){
+  auto a=context(L);const char* target=luaL_checkstring(L,1);size_t tn=0;const char* topic=luaL_checklstring(L,2,&tn);
+  if(!tn||tn>64)return luaL_error(L,"addons.send topic must be 1..64 bytes");
+  std::string payload(topic,tn);payload.insert(payload.begin(),char(tn));
+  if(lua_isnone(L,3))payload+='n';
+  else if(!encodeValue(L,3,payload,0))return luaL_error(L,"addons.send value must be nil, a boolean, number, string or a table of those (at most 6 deep, 16 KiB)");
+  bool any=false;
+  for(auto& other:a->owner->addons){if(other.get()==a||!other->enabled)continue;if(std::strcmp(target,"*")&&other->id!=target)continue;
+   if(other->inbox.size()>=32)continue;other->inbox.push_back({a->id,payload});any=true;}
+  lua_pushboolean(L,any);return 1;
+ }
+ static int onMessage(lua_State* L){
+  auto a=context(L);size_t tn=0;const char* topic=luaL_checklstring(L,1,&tn);luaL_checktype(L,2,LUA_TFUNCTION);
+  if(!tn||tn>64)return luaL_error(L,"addons.on topic must be 1..64 bytes");if(a->messageHandlers.size()>=32)return luaL_error(L,"addons.on: at most 32 handlers");
+  lua_pushvalue(L,2);a->messageHandlers.push_back({std::string(topic,tn),luaL_ref(L,LUA_REGISTRYINDEX)});lua_pushboolean(L,1);return 1;
+ }
+ void deliverMessages(){
+  for(auto& owned:addons){auto& a=*owned;if(!a.enabled||a.inbox.empty())continue;auto mail=std::move(a.inbox);a.inbox.clear();
+   for(const auto& [from,payload]:mail){if(!a.enabled)break;const size_t tn=size_t((unsigned char)payload[0]);if(payload.size()<1+tn)continue;
+    const std::string topic=payload.substr(1,tn);
+    for(const auto& h:a.messageHandlers){if(h.first!=topic||!a.enabled)continue;auto L=a.state;if(!lua_checkstack(L,8))break;
+     lua_rawgeti(L,LUA_REGISTRYINDEX,h.second);size_t at=1+tn;if(!decodeValue(L,payload,at,0)){lua_settop(L,0);continue;}lua_pushstring(L,from.c_str());
+     startBudget(a);a.timerRunning=true;const int status=protectedCall(L,2,0);a.timerRunning=false;stopBudget(a);
+     if(status!=LUA_OK)failure(a,"addons message handler failed");else{commitAiChanges(a);commitSettings(a);lua_settop(L,0);}}
+   }
+  }
+ }
  static int setMark(lua_State* L){
   auto a=context(L);if(!(a->caps&characterMarks)||!(a->owner->available&characterMarks))return luaL_error(L,"characters.marks unavailable");
-  Mark m;if(lua_type(L,1)==LUA_TSTRING){if(std::strcmp(lua_tostring(L,1),"player"))return luaL_error(L,"characters.set_mark target is a record_id or \"player\"");m.player=true;}
-  else{const lua_Integer r=luaL_checkinteger(L,1);if(r<=0||r>0xffffffffLL)return luaL_error(L,"characters.set_mark: bad record_id");m.record=uint32_t(r);}
+  Mark m;readTarget(L,1,"characters.set_mark",m.player,m.record,m.handle);
   size_t n=0;const char* name=luaL_checklstring(L,2,&n);if(!n||n>31)return luaL_error(L,"characters.set_mark name must be 1..31 bytes");
   for(size_t i=0;i<n;++i){const char c=name[i];if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='.'||c=='-'))return luaL_error(L,"characters.set_mark name may use letters, digits, _ . - only");}
   const lua_Integer v=luaL_checkinteger(L,3);if(v<0||v>255)return luaL_error(L,"characters.set_mark value must be 0..255");
   std::memcpy(m.name,name,n);m.value=uint32_t(v);
-  for(auto it=a->marks.begin();it!=a->marks.end();++it)if(it->player==m.player&&it->record==m.record&&!std::strcmp(it->name,m.name)){
+  for(auto it=a->marks.begin();it!=a->marks.end();++it)if(it->player==m.player&&it->record==m.record&&it->handle==m.handle&&!std::strcmp(it->name,m.name)){
    if(m.value)*it=m;else a->marks.erase(it);lua_pushboolean(L,1);return 1;}
   if(!m.value){lua_pushboolean(L,1);return 1;}
   if(a->marks.size()>=32)return luaL_error(L,"characters.set_mark: at most 32 marks per addon");
@@ -417,9 +487,8 @@ private:
  // health and balance follow and character.hit reports the scaled result. Held until a level change or unload.
  static int setDamageScale(lua_State* L){
   auto a=context(L);if(!(a->caps&damageScale)||!(a->owner->available&damageScale))return luaL_error(L,"characters.damage_scale unavailable");
-  DamageScale d;if(lua_type(L,1)==LUA_TSTRING){if(std::strcmp(lua_tostring(L,1),"player"))return luaL_error(L,"characters.set_damage_scale target is a record_id or \"player\"");d.player=true;}
-  else{const lua_Integer r=luaL_checkinteger(L,1);if(r<=0||r>0xffffffffLL)return luaL_error(L,"characters.set_damage_scale: bad record_id");d.record=uint32_t(r);}
-  auto same=[&](const DamageScale& x){return x.player==d.player&&x.record==d.record;};
+  DamageScale d;readTarget(L,1,"characters.set_damage_scale",d.player,d.record,d.handle);
+  auto same=[&](const DamageScale& x){return x.player==d.player&&x.record==d.record&&x.handle==d.handle;};
   a->scales.erase(std::remove_if(a->scales.begin(),a->scales.end(),same),a->scales.end());
   if(lua_isnoneornil(L,2)){lua_pushboolean(L,1);return 1;}
   luaL_checktype(L,2,LUA_TTABLE);
@@ -427,6 +496,55 @@ private:
    lua_getfield(L,2,key);if(!lua_isnil(L,-1)){const double v=luaL_checknumber(L,-1);if(!std::isfinite(v)||v<0.05||v>4)return luaL_error(L,"characters.set_damage_scale %s must be 0.05..4",key);*slot=float(v);}lua_pop(L,1);}
   if(a->scales.size()>=32)return luaL_error(L,"characters.set_damage_scale: at most 32 targets per addon");
   a->scales.push_back(d);lua_pushboolean(L,1);return 1;
+ }
+ // characters.set_hit_sound("player", material | nil): the player's own hit sounds come from the game's material
+ // sound table (0 flesh, 1 cloth, 2 leather, 3 chain, 4 plate, 5 hard, 6 golem stone) while set; nil restores them.
+ static int setHitSound(lua_State* L){
+  auto a=context(L);if(!(a->caps&hitSound)||!(a->owner->available&hitSound))return luaL_error(L,"characters.hit_sound unavailable");
+  if(lua_type(L,1)!=LUA_TSTRING||std::strcmp(lua_tostring(L,1),"player"))return luaL_error(L,"characters.set_hit_sound takes \"player\"");
+  if(lua_isnoneornil(L,2)){a->hitMaterial=-1;lua_pushboolean(L,1);return 1;}
+  const lua_Integer m=luaL_checkinteger(L,2);if(m<0||m>6)return luaL_error(L,"characters.set_hit_sound material must be 0..6");
+  a->hitMaterial=int(m);lua_pushboolean(L,1);return 1;
+ }
+ // characters.set_limb_strength(target, part, factor): target a record_id or "player"; part 1..18 (character.hit
+ // order); factor 0.05..1, 1 clears. Held until a level change or unload; with several addons the lowest wins.
+ static int setLimbStrength(lua_State* L){
+  auto a=context(L);if(!(a->caps&limbStrength)||!(a->owner->available&limbStrength))return luaL_error(L,"characters.limb_strength unavailable");
+  LimbStrength s;readTarget(L,1,"characters.set_limb_strength",s.player,s.record,s.handle);
+  const lua_Integer part=luaL_checkinteger(L,2);if(part<1||part>18)return luaL_error(L,"characters.set_limb_strength part is 1..18");s.part=int(part);
+  const double f=luaL_checknumber(L,3);if(!std::isfinite(f)||f<0.05||f>1)return luaL_error(L,"characters.set_limb_strength factor is 0.05..1");s.factor=float(f);
+  a->limbs.erase(std::remove_if(a->limbs.begin(),a->limbs.end(),[&](const LimbStrength& x){return x.player==s.player&&x.record==s.record&&x.handle==s.handle&&x.part==s.part;}),a->limbs.end());
+  if(s.factor<1.f){if(a->limbs.size()>=64)return luaL_error(L,"characters.set_limb_strength: at most 64 per addon");a->limbs.push_back(s);}
+  lua_pushboolean(L,1);return 1;
+ }
+ // characters.set_strength("player", factor) (0.25..3) and characters.set_anim_rate("player", factor) (0.5..2): the
+ // player's motor strength and base animation rate as a held multiple of the game's own values; 1 clears. Several
+ // addons multiply. Held until a level change or unload.
+ static int setBodyScale(lua_State* L){
+  auto a=context(L);if(!(a->caps&bodyScale)||!(a->owner->available&bodyScale))return luaL_error(L,"characters.body unavailable");
+  const bool strength=lua_toboolean(L,lua_upvalueindex(1))!=0;const char* name=strength?"characters.set_strength":"characters.set_anim_rate";
+  BodyScale s;s.field=strength?0:1;
+  readTarget(L,1,name,s.player,s.record,s.handle);
+  a->body.erase(std::remove_if(a->body.begin(),a->body.end(),[&](const BodyScale& x){return x.player==s.player&&x.record==s.record&&x.handle==s.handle&&x.field==s.field;}),a->body.end());
+  if(lua_isnoneornil(L,2)){lua_pushboolean(L,1);return 1;}
+  const double low=strength?0.25:0.5,high=strength?3.0:2.0;const double f=luaL_checknumber(L,2);
+  if(!std::isfinite(f)||f<low||f>high)return luaL_error(L,"%s factor is %g..%g",name,low,high);
+  if(f!=1.0){if(a->body.size()>=64)return luaL_error(L,"%s: at most 64 targets per addon",name);s.factor=float(f);a->body.push_back(s);}
+  lua_pushboolean(L,1);return 1;
+ }
+ // effects.spawn_arc{from = "hand", strands, segments, life, length}: the game's own lightning arc (the Energy Shock
+ // charge's builder) on the player's casting hand; it follows the hand and removes itself after `life` ticks.
+ // strands 1..40, segments 2..16, life 1..200 ticks (83 per second), length 0.5..8. Staged for the game thread.
+ static int spawnArc(lua_State* L){
+  auto a=context(L);if(!(a->caps&effectsArc)||!(a->owner->available&effectsArc))return luaL_error(L,"effects.arc unavailable");
+  if(a->loading)return luaL_error(L,"effects.spawn_arc is not available while the addon loads");
+  luaL_checktype(L,1,LUA_TTABLE);
+  lua_getfield(L,1,"from");if(!lua_isnil(L,-1)&&(lua_type(L,-1)!=LUA_TSTRING||std::strcmp(lua_tostring(L,-1),"hand")))return luaL_error(L,"effects.spawn_arc from is \"hand\"");lua_pop(L,1);
+  std::array<float,4> spec{20,5,10,2};const char* keys[4]={"strands","segments","life","length"};const double low[4]={1,2,1,0.5},high[4]={40,16,200,8};
+  for(int i=0;i<4;++i){lua_getfield(L,1,keys[i]);if(!lua_isnil(L,-1)){const double v=luaL_checknumber(L,-1);if(!std::isfinite(v)||v<low[i]||v>high[i])return luaL_error(L,"effects.spawn_arc %s is %g..%g",keys[i],low[i],high[i]);spec[size_t(i)]=float(v);}lua_pop(L,1);}
+  if(a->owner->phaseName!="session"){lua_pushboolean(L,0);return 1;}
+  if(a->arcs.size()>=2){lua_pushboolean(L,0);return 1;}
+  a->arcs.push_back(spec);lua_pushboolean(L,1);return 1;
  }
  static int changeAi(lua_State* L){
   auto a=context(L);
@@ -450,7 +568,11 @@ private:
   luaL_checktype(L,1,LUA_TTABLE);luaL_checktype(L,2,LUA_TTABLE);
   AiChange change;change.target=uint64_t(lua_tointeger(L,lua_upvalueindex(1)));change.owner=a->id;
   const char* fields[]={"skill","attribute2","attribute3"};double* values[]={&change.values.skill,&change.values.attribute2,&change.values.attribute3};
-  for(int i=0;i<3;++i){lua_getfield(L,2,fields[i]);if(lua_type(L,-1)!=LUA_TNUMBER)return luaL_error(L,"boost_ai requires numeric skill, attribute2 and attribute3 (as set_ai)");*values[i]=lua_tonumber(L,-1);lua_pop(L,1);}
+  // skill is required; attribute2 and attribute3 may be left out to keep the NPC's own (read back from its stored
+  // AI fields when the boost is applied).
+  for(int i=0;i<3;++i){lua_getfield(L,2,fields[i]);
+   if(lua_isnil(L,-1)&&i>0){if(i==1)change.keepAttribute2=true;else change.keepAttribute3=true;*values[i]=0;lua_pop(L,1);continue;}
+   if(lua_type(L,-1)!=LUA_TNUMBER)return luaL_error(L,"boost_ai requires a numeric skill, and numeric attribute2 and attribute3 when given");*values[i]=lua_tonumber(L,-1);lua_pop(L,1);}
   lua_getfield(L,2,"seconds");const double seconds=lua_isnumber(L,-1)?lua_tonumber(L,-1):-1;lua_pop(L,1);
   if(!std::isfinite(seconds)||seconds<0.5||seconds>10)return luaL_error(L,"boost_ai seconds must be 0.5..10");
   change.boostSeconds=float(seconds);
@@ -489,7 +611,7 @@ private:
   if(!snapshot||!snapshot->ready){lua_pushnil(L);return 1;}
   lua_newtable(L);boolean(L,"truncated",snapshot->truncated);text(L,"space","scene_local_cm");lua_newtable(L);
   int index=0;for(const auto& character:snapshot->characters){
-   lua_newtable(L);text(L,"name",character.name);number(L,"record_id",character.record);if(character.playerKnown)boolean(L,"is_player",character.player);
+   lua_newtable(L);text(L,"name",character.name);number(L,"record_id",character.record);lua_pushinteger(L,lua_Integer(character.nativeCharacter));lua_setfield(L,-2,"handle");if(character.playerKnown)boolean(L,"is_player",character.player);
    if((a->caps&(aiWrite|attitudeWrite))&&(a->owner->available&(aiWrite|attitudeWrite))&&a->timerRunning&&a->owner->aiCapture){
     const auto ticket=a->owner->aiCapture(character.nativeCharacter);
     if(ticket)for(const auto& method:{std::pair<uint64_t,const char*>{aiWrite,"set_ai"},{attitudeWrite,"set_attitude"}}){
@@ -972,7 +1094,7 @@ private:
   }
   lua_pop(L,1);
   for(auto& current:a->lights)if(current.name==light.name){current=light;lua_pushboolean(L,1);return 1;}
-  if(a->lights.size()>=lightsPerAddon)return luaL_error(L,"an addon keeps at most 3 lights; remove one first");
+  if(a->lights.size()>=lightsPerAddon)return luaL_error(L,"an addon keeps at most 5 lights; remove one first");
   a->lights.push_back(light);lua_pushboolean(L,1);return 1;
  }
  static int removeLight(lua_State* L){
@@ -1260,7 +1382,9 @@ private:
   lua_newtable(L);lua_pushcfunction(L,readFlag);lua_setfield(L,-2,"get");lua_pushcfunction(L,writeFlag);lua_setfield(L,-2,"set");lua_setglobal(L,"script_flags");
   lua_newtable(L);lua_pushcfunction(L,snapshotInventory);lua_setfield(L,-2,"snapshot");lua_setglobal(L,"inventory");
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"snapshot");
-  lua_pushboolean(L,1);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"awareness");lua_pushcfunction(L,grantPowers);lua_setfield(L,-2,"grant_powers");lua_pushcfunction(L,setMark);lua_setfield(L,-2,"set_mark");lua_pushcfunction(L,setDamageScale);lua_setfield(L,-2,"set_damage_scale");lua_setglobal(L,"characters");
+  lua_pushboolean(L,1);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"awareness");lua_pushcfunction(L,grantPowers);lua_setfield(L,-2,"grant_powers");lua_pushcfunction(L,setMark);lua_setfield(L,-2,"set_mark");lua_pushcfunction(L,setDamageScale);lua_setfield(L,-2,"set_damage_scale");lua_pushcfunction(L,setHitSound);lua_setfield(L,-2,"set_hit_sound");lua_pushcfunction(L,setLimbStrength);lua_setfield(L,-2,"set_limb_strength");lua_pushboolean(L,1);lua_pushcclosure(L,setBodyScale,1);lua_setfield(L,-2,"set_strength");lua_pushboolean(L,0);lua_pushcclosure(L,setBodyScale,1);lua_setfield(L,-2,"set_anim_rate");lua_setglobal(L,"characters");
+  lua_newtable(L);lua_pushcfunction(L,spawnArc);lua_setfield(L,-2,"spawn_arc");lua_setglobal(L,"effects");
+  lua_newtable(L);lua_pushcfunction(L,sendMessage);lua_setfield(L,-2,"send");lua_pushcfunction(L,onMessage);lua_setfield(L,-2,"on");lua_setglobal(L,"addons");
   lua_newtable(L);lua_pushcfunction(L,holdFocus);lua_setfield(L,-2,"hold_focus");lua_pushcfunction(L,spendFocus);lua_setfield(L,-2,"spend_focus");lua_pushcfunction(L,restoreFocus);lua_setfield(L,-2,"restore_focus");lua_pushcfunction(L,teachPower);lua_setfield(L,-2,"teach");lua_pushcfunction(L,openSchool);lua_setfield(L,-2,"open_school");lua_pushcfunction(L,wheelReaction);lua_setfield(L,-2,"wheel");lua_pushcfunction(L,heldFocus);lua_setfield(L,-2,"held_focus");
   lua_pushcfunction(L,readCaster);lua_setfield(L,-2,"caster");lua_pushcfunction(L,holdBindings);lua_setfield(L,-2,"hold_bindings");lua_pushcfunction(L,playGesture);lua_setfield(L,-2,"gesture");lua_setglobal(L,"powers");
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,setLight,1);lua_setfield(L,-2,"set");lua_pushboolean(L,1);lua_pushcclosure(L,setLight,1);lua_setfield(L,-2,"place");lua_pushcfunction(L,removeLight);lua_setfield(L,-2,"remove");
@@ -1396,6 +1520,7 @@ private:
   const int ref=int(lua_tointeger(L,1));const auto& hit=*static_cast<const CombatHit*>(lua_touserdata(L,2));
   lua_rawgeti(L,LUA_REGISTRYINDEX,ref);lua_newtable(L);
   number(L,"record_id",hit.record);text(L,"name",hit.name.c_str());lua_pushboolean(L,hit.player);lua_setfield(L,-2,"is_player");
+  if(hit.handle){lua_pushinteger(L,lua_Integer(hit.handle));lua_setfield(L,-2,"handle");}if(hit.attackerHandle){lua_pushinteger(L,lua_Integer(hit.attackerHandle));lua_setfield(L,-2,"attacker_handle");}
   lua_pushnumber(L,hit.health);lua_setfield(L,-2,"health_damage");lua_pushnumber(L,hit.balance);lua_setfield(L,-2,"balance_damage");
   lua_pushboolean(L,hit.downed);lua_setfield(L,-2,"downed");
   if(!hit.source.empty())text(L,"source",hit.source.c_str());
@@ -1550,7 +1675,7 @@ public:
  void notifyPhase(const std::string& phase,uint64_t generation,const std::string& only=""){
   if(only.empty())phaseName=phase;
   // A spend asked for in a session that ended is dropped with it.
-  if(only.empty()&&phase!="session")for(auto& a:addons){a->spend=0;a->restore=0;a->teach.clear();a->wheel.clear();a->marks.clear();a->scales.clear();}
+  if(only.empty()&&phase!="session")for(auto& a:addons){a->spend=0;a->restore=0;a->teach.clear();a->wheel.clear();a->marks.clear();a->scales.clear();a->limbs.clear();a->hitMaterial=-1;a->body.clear();a->arcs.clear();}
   if(only.empty())for(auto& a:addons)clearTimers(*a);
   // Placed lights belong to the level that was playing; leaving the session forgets them (follow lights stay).
   if(only.empty()&&phase!="session")for(auto& a:addons)a->lights.erase(std::remove_if(a->lights.begin(),a->lights.end(),[](const LightSpec& l){return l.placed;}),a->lights.end());
@@ -1583,7 +1708,7 @@ public:
   }
  }
  void runTimers(){
-  runTasks();
+  runTasks();deliverMessages();
   if(addons.empty())return;
   const size_t count=addons.size(),start=timerCursor%count;size_t callbacks=0;
   for(size_t round=0;round<4&&callbacks<16;++round)for(size_t offset=0;offset<count&&callbacks<16;++offset){
@@ -1660,6 +1785,11 @@ public:
  // Every enabled addon's marks, for the pulse to resolve against the live roster.
  void collectMarks(std::vector<Mark>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&characterMarks)&&(available&characterMarks))out.insert(out.end(),a->marks.begin(),a->marks.end());}
  void collectDamageScales(std::vector<DamageScale>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&damageScale)&&(available&damageScale))out.insert(out.end(),a->scales.begin(),a->scales.end());}
+ void collectLimbs(std::vector<LimbStrength>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&limbStrength)&&(available&limbStrength))out.insert(out.end(),a->limbs.begin(),a->limbs.end());}
+ void collectBody(std::vector<BodyScale>& out)const{out.clear();for(const auto& a:addons)if(a->enabled&&(a->caps&bodyScale)&&(available&bodyScale))out.insert(out.end(),a->body.begin(),a->body.end());}
+ bool arcsWanted()const{for(const auto& a:addons)if(!a->arcs.empty())return true;return false;}
+ bool takeArc(std::array<float,4>& out){for(auto& a:addons){if(a->arcs.empty())continue;const bool ok=a->enabled&&(a->caps&effectsArc)&&(available&effectsArc);out=a->arcs.front();a->arcs.erase(a->arcs.begin());if(ok)return true;}return false;}
+ int hitMaterial()const{for(const auto& a:addons)if(a->enabled&&(a->caps&hitSound)&&(available&hitSound)&&a->hitMaterial>=0)return a->hitMaterial;return -1;}
  bool wheelWanted()const{for(const auto& a:addons)if(!a->wheel.empty())return true;return false;}
  size_t takeWheel(uint32_t* out,size_t room){
   size_t n=0;for(auto& a:addons){if(a->enabled&&(a->caps&powerCast)&&(available&powerCast))for(uint32_t w:a->wheel)if(n<room)out[n++]=w;a->wheel.clear();}

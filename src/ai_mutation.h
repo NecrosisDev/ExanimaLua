@@ -7,6 +7,7 @@ struct AiChange {
  uint64_t target=0;hot::AiInput values;
  bool ai=true,hostility=false,concern=false;float hostilityValue=0,concernValue=0;
  float boostSeconds=0;std::string owner;   // boost_ai: a self-restoring set_ai for this long, by this addon
+ bool keepAttribute2=false,keepAttribute3=false;   // boost_ai: taken from the NPC's stored AI fields
 };
 struct AiTarget {uint64_t ticket=0;uintptr_t world=0,player=0,character=0,ai=0,stats=0;uint32_t record=0;char name[17]{};};
 template<class Mem>bool targetIdentity(const Mem& memory,uintptr_t base,const AiTarget& target){

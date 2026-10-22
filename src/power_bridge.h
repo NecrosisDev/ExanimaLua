@@ -32,13 +32,14 @@ using Queue=void(*)(uintptr_t,char(*)(void*),void*);
 static Cast original=nullptr;static bool created=false,installed=false;
 static Create create=nullptr;static Apply apply=nullptr,pose=nullptr;static Publish publish=nullptr;static Remove remove=nullptr;static Probe probe=nullptr;
 static Queue enqueue=nullptr;
-static bool castPossible=false,lightsPossible=false,focusPossible=false,teachPossible=false,wheelPossible=false;
+static bool castPossible=false,lightsPossible=false,focusPossible=false,teachPossible=false,wheelPossible=false,arcPossible=false;
+using BuildArc=uintptr_t(*)(uintptr_t,const uint32_t*);static BuildArc buildArc=nullptr;
 using WheelShow=void(*)(int);using WheelSlots=void(*)(char);static WheelShow wheelShow=nullptr;static WheelSlots wheelSlots=nullptr;
 using Learn=void(*)(uintptr_t,int,uint32_t);static Learn learn=nullptr;static std::atomic<uint64_t> taught{0};
 static std::atomic<bool> listening{false},pending{false};
 static std::atomic<unsigned> faults{0},refused{0};
 static SRWLOCK queueLock=SRWLOCK_INIT;static std::array<uint32_t,16> casts{};static size_t castCount=0,castLost=0;
-constexpr uintptr_t lightClass=0x2fcf40;constexpr size_t lightSize=0x2e8;constexpr size_t maxLights=6;
+constexpr uintptr_t lightClass=0x2fcf40;constexpr size_t lightSize=0x2e8;constexpr size_t maxLights=8;
 constexpr float fullCeiling=1.0f,lowestCeiling=0.05f;
 
 // --- power.cast -------------------------------------------------------------------------------------------------
@@ -195,6 +196,7 @@ struct Job {
  // Written by the pulse only while no job is pending; read by the job.
  std::array<Want,maxLights> wants{};size_t wanted=0;float focus=0,spend=0,restore=0;bool session=false;uint32_t generation=1;
  std::array<uint32_t,8> teach{};size_t teaching=0;std::array<uint32_t,8> wheel{};size_t wheeling=0;   // wheel: power | 0x80000000 for "cast"
+ std::array<float,4> arc{};bool arcWanted=false;   // effects.spawn_arc: strands, segments, life, length
  // Owned by the job; the pulse reads them only while no job is pending.
  std::array<Live,maxLights> live{};float focusApplied=0;uint32_t focusGeneration=1;uint64_t last=0;bool broken=false;
 };
@@ -369,6 +371,21 @@ static void run(){
   }
   job.wheeling=0;
  }
+ // effects.spawn_arc: the Energy Shock charge 0x28f120's own sequence: a 0x54-byte spec (flags 0x201, strands,
+ // segments, life, length 2.0 by default, 0.25, 0.25, 48.0), the arc builder 0x1a7460(scene, spec) with the scene of
+ // the hand body (player +0xe78: +0x18 -> +0x130 -> +0x220), the node's hand-local offset (-15, -5, 0) at +0x94, the
+ // controller (+0x160) following the hand at +0x188, and 0x5a420 to publish it. It removes itself after `life`.
+ if(arcPossible&&job.arcWanted){
+  job.arcWanted=false;uintptr_t hand=0,body=0,scene=0;
+  if(m.get(player+0xe78,hand)&&hand&&m.get(hand+0x18,body)&&body&&m.get(body+0x130,body)&&body&&m.get(body+0x220,scene)&&scene){
+   uint32_t spec[21]{};spec[0]=0x201;spec[1]=uint32_t(job.arc[0]);spec[2]=uint32_t(job.arc[1]);spec[3]=uint32_t(job.arc[2]);
+   const float f4=job.arc[3],f5=0.25f,f6=0.25f,f8=48.0f;std::memcpy(&spec[4],&f4,4);std::memcpy(&spec[5],&f5,4);std::memcpy(&spec[6],&f6,4);std::memcpy(&spec[8],&f8,4);
+   const uintptr_t node=buildArc(scene,spec);uintptr_t controller=0;
+   if(node&&readable(node+0x168,8)&&m.get(node+0x160,controller)&&controller&&readable(controller+0x190,8)){
+    const float offset[3]={-15.f,-5.f,0.f};std::memcpy((void*)(node+0x94),offset,12);*(uintptr_t*)(controller+0x188)=hand;
+    uintptr_t published=node;publish(scene,&published,0);}
+  }
+ }
 }
 static char queued(void* payload){
  __try{if(payload==&job)run();else ++faults;}__except(EXCEPTION_EXECUTE_HANDLER){++faults;}
@@ -387,12 +404,13 @@ static void step(scripting::Host& owner,const std::string& phase){
  if(job.generation!=generation){job.generation=generation;job.broken=false;}
  const auto lights=owner.desiredLights();const float focus=owner.desiredFocus();
  bool holding=job.focusApplied!=0;for(const auto& l:job.live)holding|=l.node!=0;
- const bool spending=owner.spendWanted(),teaching=teachPossible&&owner.teachWanted(),wheeling=wheelPossible&&owner.wheelWanted();
- if(lights.empty()&&focus==0&&!holding&&!spending&&!teaching&&!wheeling)return;
+ const bool spending=owner.spendWanted(),teaching=teachPossible&&owner.teachWanted(),wheeling=wheelPossible&&owner.wheelWanted(),arcing=arcPossible&&owner.arcsWanted();
+ if(lights.empty()&&focus==0&&!holding&&!spending&&!teaching&&!wheeling&&!arcing)return;
  if(!worldemitters::queueIdle())return;
  job.spend=playing&&focusPossible?owner.takeSpend():0.0f;job.restore=playing&&focusPossible?owner.takeRestore():0.0f;
  job.teaching=playing&&teachPossible?owner.takeTeach(job.teach.data(),job.teach.size()):0;
  job.wheeling=playing&&wheelPossible?owner.takeWheel(job.wheel.data(),job.wheel.size()):0;
+ job.arcWanted=playing&&arcPossible&&owner.takeArc(job.arc);
  job.wanted=0;
  for(const auto& light:lights){if(job.wanted==maxLights)break;auto& w=job.wants[job.wanted++];
   const std::string key=light.addon+"/"+light.light.name;std::memset(w.key,0,sizeof w.key);std::memcpy(w.key,key.data(),(std::min)(key.size(),sizeof w.key-1));w.spec=light.light;}
@@ -416,6 +434,9 @@ static bool available(){
   wheelPossible=queue&&castPossible&&gamebridge::operation(base+0x13dcf0,showPrefix,sizeof showPrefix)&&gamebridge::operation(base+0x1d7df0,slotsPrefix,sizeof slotsPrefix)&&
    readable(base+0x2e8668,200)&&readable(base+0x56a570,1)&&readable(base+0x4997d0,4)&&readable(base+0x32d248,4)&&readable(base+0x32d2b0,8)&&readable(base+0x32d3a0,8)&&readable(base+0x32d550,4);
   if(wheelPossible){wheelShow=(WheelShow)(base+0x13dcf0);wheelSlots=(WheelSlots)(base+0x1d7df0);}}
+ {const unsigned char arcPrefix[]={0x55,0x48,0x89,0xe5,0x48,0x8d,0x64,0x24,0x90,0x48,0x89,0x5d};const unsigned char publishPrefix2[]={0x55,0x48,0x89,0xe5,0x48,0x8d,0x64,0x24,0xa0,0x48,0x89,0x5d};
+  arcPossible=queue&&gamebridge::operation(base+0x1a7460,arcPrefix,sizeof arcPrefix)&&gamebridge::operation(base+0x5a420,publishPrefix2,sizeof publishPrefix2);
+  if(arcPossible){buildArc=(BuildArc)(base+0x1a7460);if(!publish)publish=(Publish)(base+0x5a420);}}
  // 0x50eb0 is the world contract's propagator; its prefix is checked by worldContract().
  lightsPossible=queue&&readable(base+lightClass,0x70)&&gamebridge::operation(base+0x51880,createPrefix,sizeof createPrefix)&&gamebridge::operation(base+0x51eb0,applyPrefix,sizeof applyPrefix)&&
   gamebridge::operation(base+0x121150,probePrefix,sizeof probePrefix)&&gamebridge::operation(base+0x5bed0,removePrefix,sizeof removePrefix)&&gamebridge::operation(base+0x5a420,publishPrefix,sizeof publishPrefix);
