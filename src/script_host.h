@@ -204,7 +204,7 @@ public:
   bool(*addWear)(uint32_t item,int wear,int dirt)=nullptr;
   bool(*grantPowers)(uint32_t record,const std::vector<uint32_t>& ids)=nullptr;
   bool(*dialog)(const std::string& title,const std::string& text)=nullptr;
-  bool(*readPackage)(const std::string& package,const std::string& member,std::string& out,std::string& why)=nullptr;
+  bool(*readPackage)(const std::string& package,const std::string& member,std::string& out,std::string& why,uint64_t offset,uint64_t length)=nullptr;
   bool(*fires)(std::vector<FireInfo>& out)=nullptr;
   bool(*writeAsset)(const std::string& owner,const std::string& path,const std::string& bytes,std::string& why)=nullptr;
  };
@@ -1185,8 +1185,11 @@ private:
   size_t n=0,p=0;const char* member=luaL_checklstring(L,1,&n);const char* package=luaL_checklstring(L,2,&p);
   if(!n||n>16||std::memchr(member,0,n))return luaL_error(L,"a member name is 1..16 bytes");
   if(!p||p>64||std::memchr(package,0,p)||std::memchr(package,'\\',p)||std::memchr(package,'/',p)||std::memchr(package,':',p))return luaL_error(L,"the package is its file name, such as Resource.rpk");
+  uint64_t offset=0,length=0;
+  if(lua_istable(L,3)){for(auto [field,target]:{std::pair<const char*,uint64_t*>{"offset",&offset},{"length",&length}}){lua_getfield(L,3,field);
+   if(!lua_isnil(L,-1)){if(!lua_isinteger(L,-1)||lua_tointeger(L,-1)<0)return luaL_error(L,"levels.read %s is a whole number of bytes",field);*target=uint64_t(lua_tointeger(L,-1));}lua_pop(L,1);}}
   std::string out,why;
-  if(!a->owner->shared.readPackage||!a->owner->shared.readPackage(std::string(package,p),std::string(member,n),out,why)){lua_pushnil(L);lua_pushstring(L,why.empty()?"unavailable":why.c_str());return 2;}
+  if(!a->owner->shared.readPackage||!a->owner->shared.readPackage(std::string(package,p),std::string(member,n),out,why,offset,length)){lua_pushnil(L);lua_pushstring(L,why.empty()?"unavailable":why.c_str());return 2;}
   lua_pushlstring(L,out.data(),out.size());return 1;
  }
  // assets.write(path, bytes): a file in this addon's cache/ folder (8 MiB at most), true or nil and a reason. Pair it

@@ -203,18 +203,21 @@ struct MappedFile {
   UnmapViewOfFile(view);return ok;
  }
 };
-static bool readPackage(const std::string& package,const std::string& member,std::string& out,std::string& why){
+static bool readPackage(const std::string& package,const std::string& member,std::string& out,std::string& why,uint64_t from,uint64_t length){
  if(modsDirectory.empty()){why="the game folder is unknown";return false;}
  MappedFile f;if(!f.open(modsDirectory.parent_path()/std::filesystem::u8path(package))){why="no such package in the game folder";return false;}
  unsigned char head[8]{};if(!f.copy(0,8,head)||head[0]!=1||head[1]!=0x0c||head[2]!=0xbf||head[3]!=0xaf){why="not a package file";return false;}
- uint32_t length=0;std::memcpy(&length,head+4,4);if(length%32||length>(64u<<20)){why="not a package file";return false;}
- std::vector<char> table(length);if(!f.copy(8,length,table.data())){why="the package index could not be read";return false;}
+ uint32_t lengthOfTable=0;std::memcpy(&lengthOfTable,head+4,4);if(lengthOfTable%32||lengthOfTable>(64u<<20)){why="not a package file";return false;}
+ std::vector<char> table(lengthOfTable);if(!f.copy(8,lengthOfTable,table.data())){why="the package index could not be read";return false;}
  const std::string wanted=lower(member);
- for(uint32_t o=0;o<length;o+=32){
+ for(uint32_t o=0;o<lengthOfTable;o+=32){
   if(lower(std::string(table.data()+o,strnlen(table.data()+o,16)))!=wanted)continue;
   uint32_t offset=0,size=0,type=0;std::memcpy(&offset,table.data()+o+16,4);std::memcpy(&size,table.data()+o+20,4);std::memcpy(&type,table.data()+o+24,4);
-  if(type!=0){why="that member is compressed";return false;}if(size>8u*1024*1024){why="the member is larger than 8 MiB";return false;}
-  out.resize(size);if(!f.copy(8ull+length+offset,size,out.data())){out.clear();why="the member could not be read";return false;}
+  if(type!=0){why="that member is compressed";return false;}
+  // A slice [from, from + length) of the member (length 0: to its end); the 8 MiB limit is on what is returned.
+  if(from>size){why="the offset is past the member's end";return false;}const uint64_t rest=size-from;const uint64_t take=length&&length<rest?length:rest;
+  if(take>8u*1024*1024){why="the slice is larger than 8 MiB (read it in parts with offset and length)";return false;}
+  out.resize(size_t(take));if(!f.copy(8ull+uint64_t(lengthOfTable)+offset+from,size_t(take),out.data())){out.clear();why="the member could not be read";return false;}
   return true;
  }
  why="no such member in that package";return false;
