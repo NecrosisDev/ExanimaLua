@@ -59,3 +59,14 @@ jobs:
           if ($env:GITHUB_REF_NAME.Contains('-')) { $flags += '--prerelease' }
           gh release create $env:GITHUB_REF_NAME @assets --repo $env:GITHUB_REPOSITORY @flags
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # The all-mods bundle takes each mod's newest release, so tag the mods first. The token reads public
+      # repositories; private ones need a token with access to them in GH_TOKEN instead.
+      - name: Build and attach the all-mods bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -X utf8 -B bundle.py --download
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bundle = Get-ChildItem dist -File -Filter 'ExanimaMods-*' | ForEach-Object FullName
+          gh release upload $env:GITHUB_REF_NAME @bundle --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

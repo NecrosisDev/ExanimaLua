@@ -1,0 +1,43 @@
+["com.necrosis.script-runtime"]
+enabled = true
+priority = 0
+
+["com.necrosis.excamera"]
+enabled = true
+priority = 1
+
+["com.necrosis.keyring"]
+enabled = true
+priority = 2
+
+["com.necrosis.endless"]
+enabled = false
+priority = 3
+
+["com.necrosis.grindstone"]
+enabled = true
+priority = 4
+
+["com.necrosis.light-orb"]
+enabled = true
+priority = 5
+
+["com.necrosis.stoneskin"]
+enabled = true
+priority = 6
+
+["com.necrosis.injuries"]
+enabled = true
+priority = 7
+
+["com.necrosis.fire"]
+enabled = true
+priority = 8
+
+["com.necrosis.energy-school"]
+enabled = true
+priority = 9
+
+["com.necrosis.groundfighters"]
+enabled = true
+priority = 10

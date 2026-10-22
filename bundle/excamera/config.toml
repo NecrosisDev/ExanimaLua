@@ -1,0 +1,10 @@
+[plugin]
+id = "com.necrosis.excamera"
+name = "ExCamera (first person, VR)"
+version = "0.0.0"
+supported_versions = []
+url = ""
+enabled = true
+executable = "ExanimaFirstPerson.dll"
+[plugin.author]
+name = "NecrosisDev"

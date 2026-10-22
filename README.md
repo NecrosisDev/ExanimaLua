@@ -44,6 +44,14 @@ The patch comes in two versions, for two EMTK builds:
 
 Use the framework DLL that matches your EMTK launcher.
 
+## All mods in one download
+
+Each runtime release also carries `ExanimaMods-<version>.zip`: the runtime, every
+NecrosisDev mod, the patched EMTK launcher and framework (with the patch), a
+ready EMTK profile and `Install.cmd`. Unzip it, run `Install.cmd` with Exanima
+closed, then start the game with `EMTK\Launch Exanima (modded).vbs` in your
+Exanima folder. Its README.txt has the details.
+
 ## Install
 
 1. Close Exanima.
@@ -125,6 +133,11 @@ first. Options:
 
 `python -X utf8 -B build.py --out <new folder>` runs only the build and tests,
 into a new folder.
+
+`python -X utf8 -B bundle.py --mods <folder of release ZIPs>` builds the all-mods
+bundle from the runtime in `dist/` and each mod's release ZIP (`--download`
+fetches each mod's newest GitHub release instead, as the release workflow does).
+The installer, profile and EMTK files it adds live in `bundle/`.
 
 ## Layout
 
