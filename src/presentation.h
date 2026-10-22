@@ -10,7 +10,9 @@ static bool titleObject(uintptr_t object){
 // The one detour on the menu draw 0x128f30: it also carries the shared title rows (title_rows_bridge.h), which
 // therefore never hook this function a second time.
 static void observeMenu(uintptr_t object){
- if(titlerows::installed)titlerows::menuDraw(object);else originalMenuDraw(object);
+ // While Settings is open over the title menu, the menu's buttons are not drawn (they showed through the form).
+ const bool hidden=runtimeEnabled&&titleObject(object)&&settingstabs::optionsOpen();
+ if(hidden){}else if(titlerows::installed)titlerows::menuDraw(object);else originalMenuDraw(object);
  if(runtimeEnabled&&titleObject(object))titleDrawThread=GetCurrentThreadId();
 }
 static void presentationBody(HDC dc){

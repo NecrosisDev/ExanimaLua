@@ -170,7 +170,7 @@ static void makeGlow(Live& l,size_t slot,uintptr_t world){
 }
 struct Job {
  // Written by the pulse only while no job is pending; read by the job.
- std::array<Want,maxLights> wants{};size_t wanted=0;float focus=0;bool session=false;uint32_t generation=1;
+ std::array<Want,maxLights> wants{};size_t wanted=0;float focus=0,spend=0;bool session=false;uint32_t generation=1;
  // Owned by the job; the pulse reads them only while no job is pending.
  std::array<Live,maxLights> live{};float focusApplied=0;uint32_t focusGeneration=1;uint64_t last=0;bool broken=false;
 };
@@ -299,6 +299,10 @@ static void run(){
    const float delta=focusStep(job.focus,job.focusApplied,ceiling,reserve);
    if(delta!=0){*(float*)(player+0xd84)=reserve+delta;job.focusApplied+=delta;}
   }
+  // powers.spend_focus: added to the cost the game drains out of current focus (+0xd80), as 0x17a620 does for a
+  // cast; the game's tick 0x17a6b0 then pays it and pauses recovery.
+  float cost=0;
+  if(job.spend>0&&m.get(player+0xd80,cost)&&std::isfinite(cost)&&cost>=0)*(float*)(player+0xd80)=cost+job.spend;
  }
 }
 static char queued(void* payload){
@@ -318,8 +322,10 @@ static void step(scripting::Host& owner,const std::string& phase){
  if(job.generation!=generation){job.generation=generation;job.broken=false;}
  const auto lights=owner.desiredLights();const float focus=owner.desiredFocus();
  bool holding=job.focusApplied!=0;for(const auto& l:job.live)holding|=l.node!=0;
- if(lights.empty()&&focus==0&&!holding)return;
+ const bool spending=owner.spendWanted();
+ if(lights.empty()&&focus==0&&!holding&&!spending)return;
  if(!worldemitters::queueIdle())return;
+ job.spend=playing&&focusPossible?owner.takeSpend():0.0f;
  job.wanted=0;
  for(const auto& light:lights){if(job.wanted==maxLights)break;auto& w=job.wants[job.wanted++];
   const std::string key=light.addon+"/"+light.light.name;std::memset(w.key,0,sizeof w.key);std::memcpy(w.key,key.data(),(std::min)(key.size(),sizeof w.key-1));w.spec=light.light;}

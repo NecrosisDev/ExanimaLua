@@ -234,7 +234,7 @@ static bool start(){
  if(nativePossible)newgame::available();if(!controlDirectory.empty())sharedlua::modsDirectory=controlDirectory.parent_path();
  if(!controlDirectory.empty()){console::readSettings(controlDirectory/L"ScriptRuntime.ini");console::startTailing(controlDirectory.parent_path());}
  if(nativePossible&&frameReady&&hookLibrary()&&!settingstabs::ready){const auto why=settingstabs::available();if(!why.empty())host.report("runtime","warn",("Mod Settings tab unavailable: "+why).c_str());}
- modsettings::start(controlDirectory);
+ titlerows::formOpen=settingstabs::optionsOpen;modsettings::start(controlDirectory);
  if(nativePossible&&!sounds::possible&&!controlDirectory.empty()){sounds::available(controlDirectory.parent_path().parent_path());if(!sounds::possible)host.report("runtime","warn","ui.sound unavailable: Sound.rpk index or the sound functions did not match");}
  host.setSharedApi({sharedlua::addRow,sharedlua::removeRow,sharedlua::enableRow,sharedlua::serve,sharedlua::clearServed,forgetShared,newgame::arm,sharedlua::readAsset,console::notify,
   modsettings::defineSettings,modsettings::readSetting,sounds::request,addPlacement,gestures::request,gear::queueWear,npcpowers::request,dialogs::request});

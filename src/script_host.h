@@ -128,6 +128,7 @@ struct IdChange { uint32_t before=0,after=0; };   // item.id_changed
 struct NativeCall { enum Kind { damage, push, drive, travel, place } kind=damage;float values[4]{};bool flag=false;uint32_t record=0,state=0;char name[17]{}; };
 class Host {
 public:
+ std::string phaseName="loading";   // the last lifecycle phase delivered to addons (menu, loading, session)
  using Logger=void(*)(void*,const char*,const char*,const char*);
  using WorldProvider=const WorldSnapshot*(*)();
  using TimeRead=bool(*)(int64_t&);using TimeWrite=bool(*)(uint32_t);
@@ -193,7 +194,7 @@ private:
   std::vector<Handler> handlers;TimerQueue timers;
   settings::Cache* settingsData=nullptr;std::unique_ptr<settings::Document> staged;
   std::vector<Module> modules;std::vector<bool> importing;int cache=0,logs=0;
-  std::vector<LightSpec> lights;lua_Number focus=0;int bindings=0;   // bindings: continuous-power slots this addon holds
+  std::vector<LightSpec> lights;lua_Number focus=0,spend=0;int bindings=0;   // bindings: continuous-power slots this addon holds
   ~Addon(){if(state)lua_close(state);}
  };
  std::vector<std::unique_ptr<Addon>> addons;
@@ -751,6 +752,16 @@ private:
   if(!std::isfinite(value)||value<0||value>0.5)return luaL_error(L,"hold_focus expects an amount from 0 to 0.5 of the focus ceiling");
   a->focus=value;lua_pushboolean(L,1);return 1;
  }
+ // powers.spend_focus(amount): the player pays `amount` of focus once, the way the game's casts do (+0xd80 drains
+ // out of current focus each tick and pauses recovery). Staged for the next session pulse; false outside a session.
+ static int spendFocus(lua_State* L){
+  auto a=context(L);if(!(a->caps&focusHold)||!(a->owner->available&focusHold))return luaL_error(L,"powers.focus unavailable");
+  if(a->loading)return luaL_error(L,"powers.spend_focus is not available while the addon loads; call it from a timer or event");
+  const lua_Number value=luaL_checknumber(L,1);
+  if(!std::isfinite(value)||value<0||value>0.5)return luaL_error(L,"spend_focus expects an amount from 0 to 0.5");
+  if(a->owner->phaseName!="session"){lua_pushboolean(L,0);return 1;}
+  a->spend=(std::min)(a->spend+value,lua_Number(0.5));lua_pushboolean(L,1);return 1;
+ }
  static int heldFocus(lua_State* L){
   auto a=context(L);if(!(a->caps&focusHold)||!(a->owner->available&focusHold))return luaL_error(L,"powers.focus unavailable");
   lua_pushnumber(L,a->focus);return 1;
@@ -1107,7 +1118,7 @@ private:
   lua_newtable(L);lua_pushcfunction(L,snapshotInventory);lua_setfield(L,-2,"snapshot");lua_setglobal(L,"inventory");
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"snapshot");
   lua_pushboolean(L,1);lua_pushcclosure(L,snapshotCharacters,1);lua_setfield(L,-2,"awareness");lua_pushcfunction(L,grantPowers);lua_setfield(L,-2,"grant_powers");lua_setglobal(L,"characters");
-  lua_newtable(L);lua_pushcfunction(L,holdFocus);lua_setfield(L,-2,"hold_focus");lua_pushcfunction(L,heldFocus);lua_setfield(L,-2,"held_focus");
+  lua_newtable(L);lua_pushcfunction(L,holdFocus);lua_setfield(L,-2,"hold_focus");lua_pushcfunction(L,spendFocus);lua_setfield(L,-2,"spend_focus");lua_pushcfunction(L,heldFocus);lua_setfield(L,-2,"held_focus");
   lua_pushcfunction(L,readCaster);lua_setfield(L,-2,"caster");lua_pushcfunction(L,holdBindings);lua_setfield(L,-2,"hold_bindings");lua_pushcfunction(L,playGesture);lua_setfield(L,-2,"gesture");lua_setglobal(L,"powers");
   lua_newtable(L);lua_pushboolean(L,0);lua_pushcclosure(L,setLight,1);lua_setfield(L,-2,"set");lua_pushboolean(L,1);lua_pushcclosure(L,setLight,1);lua_setfield(L,-2,"place");lua_pushcfunction(L,removeLight);lua_setfield(L,-2,"remove");
   lua_pushcfunction(L,listLights);lua_setfield(L,-2,"list");lua_setglobal(L,"lights");
@@ -1394,6 +1405,9 @@ public:
  }
  bool enabled(const std::string& id)const{for(const auto& a:addons)if(a->id==id)return a->enabled;return false;}
  void notifyPhase(const std::string& phase,uint64_t generation,const std::string& only=""){
+  if(only.empty())phaseName=phase;
+  // A spend asked for in a session that ended is dropped with it.
+  if(only.empty()&&phase!="session")for(auto& a:addons)a->spend=0;
   if(only.empty())for(auto& a:addons)clearTimers(*a);
   // Placed lights belong to the level that was playing; leaving the session forgets them (follow lights stay).
   if(only.empty()&&phase!="session")for(auto& a:addons)a->lights.erase(std::remove_if(a->lights.begin(),a->lights.end(),[](const LightSpec& l){return l.placed;}),a->lights.end());
@@ -1480,6 +1494,12 @@ public:
  }
  int desiredBindings()const{
   int total=0;for(const auto& a:addons)if(a->enabled&&(a->caps&powerCast)&&(available&powerCast))total+=a->bindings;return (std::min)(total,4);
+ }
+ bool spendWanted()const{for(const auto& a:addons)if(a->spend>0)return true;return false;}
+ // Focus the addons asked to spend since the last call (taken once); at most 0.5 in one pulse.
+ float takeSpend(){
+  lua_Number total=0;for(auto& a:addons){if(a->enabled&&(a->caps&focusHold)&&(available&focusHold))total+=a->spend;a->spend=0;}
+  return float((std::min)(total,lua_Number(0.5)));
  }
  float desiredFocus()const{
   lua_Number total=0;for(const auto& a:addons)if(a->enabled&&(a->caps&focusHold)&&(available&focusHold))total+=a->focus;

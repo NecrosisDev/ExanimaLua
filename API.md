@@ -127,7 +127,7 @@ mean" hint; in `optional` it is logged and ignored.
 | `player.push` | `player.push(dx, dy, dz, amount)` | write | 0.26.0 |
 | `levels.drive` | `levels.drive(record_id, state)`: open/close/toggle a door or drive a device record | write | 0.26.0 |
 | `powers.cast` | `events.on("power.cast", fn)` for Light-school powers, `powers.caster()` | event | 0.26.0 |
-| `powers.focus` | `powers.hold_focus(amount)`, `powers.held_focus()` | write | 0.26.0 |
+| `powers.focus` | `powers.hold_focus(amount)`, `powers.held_focus()`, `powers.spend_focus(amount)` (0.28.0) | write | 0.26.0 |
 | `world.lights` | `lights.set(name, spec)`, `lights.remove(name)`, `lights.list()` | write | 0.26.0 |
 | `items.wear` | `items.add_wear(id, {wear, dirt})` | write | 0.28.0 |
 | `ui.sound` | `ui.sound(name[, volume])`: one of the game's own sounds at the player | screen | 0.28.0 |
@@ -192,6 +192,7 @@ mean" hint; in `optional` it is logged and ignored.
 | `levels.clear_served()` | nothing | stops serving this addon's members |
 | `levels.add_placement(level, item_id, {x, y, z}[, yaw])` | boolean | a loose item (objdb id) added to `level` (a member such as `"exanima01.rfc"`, any case) every time the game reads it, on top of whatever serves that member; position in level cm, yaw in degrees (upright). Declare it while the addon loads, before the level is read. A placement the level already has (same item within 1 cm) is not doubled. Like any level edit it shows in levels the game generates fresh, not in a saved game's copy. 64 per addon; needs `levels.serve`. Use this instead of shipping a whole level file, which replaces other mods' changes and the installed game's own level |
 | `powers.hold_focus(amount)` | true | hold back 0..0.5 of the player's focus ceiling; 0 gives it back; not while loading |
+| `powers.spend_focus(amount)` | boolean | the player pays 0..0.5 focus once, as a cast does (drained over a few ticks, recovery paused); false outside a session; not while loading |
 | `powers.held_focus()` | number | what this addon asked for last |
 | `powers.caster()` | `{focus, focus_ceiling, focus_reserve, bindings, bindings_used, last_power, techniques}` or nil | the player's thaumaturgy state; needs `powers.cast`; see Powers and lights. `last_power` is the last instant power cast (any school, 0 after a sustained or continuous one), the value Iteration compares; a Light cast the runtime takes records itself there too |
 | `powers.gesture(kind)` | boolean | the player plays a cast motion and no power fires: `"channel"` (the push motion 0x22) or `"thrust"` (Shock's 0x27); next pulse, only while standing with no action running; it ends after about 1.2 s, or at once when the player attacks or guards; false when one is already waiting |

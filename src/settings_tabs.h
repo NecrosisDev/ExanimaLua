@@ -62,6 +62,11 @@ static bool contains(uintptr_t f){
  const int n=at<int>(desktop+0xA8);const uintptr_t list=at<uintptr_t>(desktop+0xB0);
  if(n<0||n>4096||(n&&!readable(list,size_t(n)*8)))return false;for(int i=0;i<n;++i)if(((uintptr_t*)list)[i]==f)return true;return false;
 }
+// Whether the game's Settings form is open (on the desktop's form list): the title menu is hidden behind it.
+static bool optionsOpen(){
+ __try{if(!readable(base+rva::optionsForm,8))return false;const uintptr_t f=at<uintptr_t>(base+rva::optionsForm);return f&&contains(f);}
+ __except(EXCEPTION_EXECUTE_HANDLER){return false;}
+}
 static Table table(uintptr_t f){
  if(!f||!readable(f,form::elements+8))return {};const int last=at<int>(f+form::elementLast);if(last<0||last>=capacity)return {};
  auto e=at<NativeElement*>(f+form::elements);if(!readable(uintptr_t(e),size_t(last+1)*sizeof(NativeElement)))return {};return {e,last+1};
