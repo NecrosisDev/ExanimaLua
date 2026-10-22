@@ -122,7 +122,7 @@ struct GearResult { bool handled=false,restore=false,ignite=false;int wear=-1,di
 // A native call staged by a callback and made after it returns (native_calls_bridge.h).
 // One row an addon declares for the Mod Settings tab (settings.define). Values travel as text: "true"/"false",
 // a number, a choice's text, or a virtual-key code; fallback is the default in that form.
-struct SettingDef { std::string key,label,type;double minimum=0,maximum=1,step=1;std::vector<std::string> choices;std::string fallback; };
+struct SettingDef { std::string key,label,type;double minimum=0,maximum=1,step=1;std::vector<std::string> choices;std::string fallback,help; };
 struct SettingChange { std::string key,value; };
 struct IdChange { uint32_t before=0,after=0; };   // item.id_changed
 struct NativeCall { enum Kind { damage, push, drive, travel, place } kind=damage;float values[4]{};bool flag=false;uint32_t record=0,state=0;char name[17]{}; };
@@ -621,7 +621,7 @@ private:
   std::vector<SettingDef> defs;
   for(lua_Integer i=1;i<=count;++i){
    lua_rawgeti(L,2,i);if(!lua_istable(L,-1))return luaL_error(L,"settings row %d is not a table",int(i));const int row=lua_gettop(L);
-   SettingDef d;d.key=shortText(L,row,"key",48,true);d.label=shortText(L,row,"label",40,true);d.type=shortText(L,row,"type",8,true);
+   SettingDef d;d.key=shortText(L,row,"key",48,true);d.label=shortText(L,row,"label",40,true);d.type=shortText(L,row,"type",8,true);d.help=shortText(L,row,"help",160,false);
    for(const auto& x:defs)if(x.key==d.key)return luaL_error(L,"duplicate setting key '%s'",d.key.c_str());
    for(char c:d.key)if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='.'||c=='-'))return luaL_error(L,"setting key '%s' may use letters, digits, _ . - only",d.key.c_str());
    if(d.type=="number"){

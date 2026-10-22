@@ -198,6 +198,7 @@ static void pumpPresentation(uint64_t thread,uint64_t windowThread,const std::st
    session.configure(settingsCapability|inventoryCapabilities()|(containerWritePossible?scripting::containerEdit:0)|(attitudeWritePossible?scripting::attitudeWrite:0)|(aiWritePossible?scripting::aiWrite:0)|(worldPossible?scripting::worldRead:0)|(charactersPossible?(scripting::charactersRead|scripting::awarenessRead):0)|(scripting::lifecycleEvents|scripting::timerEvents)|(ready?scripting::itemApiCapabilities:0)|(combat::installed?scripting::combatEvents:0)|(savedata::writerOn?scripting::saveData:0)|(scriptcommands::registered?(scripting::scriptEvents|scripting::scriptFlags):0)|(itemstats::lookup?scripting::itemStats:0)|(zones::installed&&charactersPossible?scripting::zoneEvents:0)|(gamemessages::installed?scripting::gameMessages:0)|sharedCapabilities()|powerCapabilities(),!ready);
    if(!ready)host.report("runtime","warn","Native item API not ready; next menu retry in five seconds");
   }
+  if(gamebridge::active)session.finish();
   // The Settings-form hook waits for a settled menu, so a Settings owner that enables after this runtime
   // (ExCamera) has already either claimed the host role or hooked the step itself.
   const int tabs=settingstabs::poll();
@@ -395,5 +396,7 @@ extern "C" __declspec(dllexport) int settings_tab_host_open(){return settingstab
 extern "C" __declspec(dllexport) int settings_tab_host_title(int tab,wchar_t* out,int capacity){return settingstabs::hostedTitle(tab,out,capacity);}
 extern "C" __declspec(dllexport) int settings_tab_host_rows(int tab,int page,settingstabs::Row* out,int capacity){return settingstabs::hostedRows(tab,page,out,capacity);}
 extern "C" __declspec(dllexport) void settings_tab_host_change(int tab,int page,int id,int kind,int delta,float position,int checked,int key){settingstabs::hostedChange(tab,page,id,kind,delta,position,checked,key);}
+// Help text for a row of the Mod Settings tab, by the id from its rows (0 when none): for a host's tooltip.
+extern "C" __declspec(dllexport) int mod_settings_help(int id,wchar_t* out,int capacity){return modsettings::help(id,out,capacity);}
 extern "C" __declspec(dllexport) void settings_tab_host_event(int tab,int event){settingstabs::hostedEvent(tab,event);}
 BOOL WINAPI DllMain(HINSTANCE h,DWORD why,LPVOID){if(why==DLL_PROCESS_ATTACH){module=h;DisableThreadLibraryCalls(h);}return TRUE;}

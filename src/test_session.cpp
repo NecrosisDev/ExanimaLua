@@ -10,7 +10,8 @@ int main(){
  ScriptSource code{"addon","events.on('runtime.phase',function(e) log.info(e.phase..':'..e.generation) end);events.on('item.use','test',function() return true end)","events.lifecycle,events.item_use,items.read","",{}};
  assert(session.submit(code,true)&&session.pending("addon")&&!host.handles("test"));
  auto unknown=code;unknown.id="unknown";unknown.required="unknown";assert(!session.submit(unknown,true));assert(session.error().find("unknown required capability")!=std::string::npos);
- unknown.required="storage.settings";assert(!session.submit(unknown,true));assert(session.error().find("unavailable required capability")!=std::string::npos);
+ // Before the native API starts, a known capability that is not available yet waits instead of being refused.
+ unknown.required="storage.settings";assert(session.submit(unknown,true)&&session.pending("unknown"));
  assert(!session.begin(11,22,"menu",0,0));assert(session.pending("addon"));
  assert(session.begin(11,11,"menu",0,0));assert(!session.begin(11,11,"menu",0,0));assert(!session.settledMenu(499));session.end();
  assert(session.begin(11,11,"menu",0,500));assert(session.retryDue(500));assert(!session.retryDue(501));session.consume();session.end();
@@ -18,6 +19,9 @@ int main(){
  session.configure(lifecycleEvents|itemApiCapabilities,false);
  assert(session.begin(11,11,"menu",0,600));session.consume();session.end();
  assert(!session.pending("addon")&&host.handles("test")&&messages.back()=="menu:0");
+ // Once the native API has started, capabilities are final: the waiting addon and new submissions are refused.
+ assert(session.pending("unknown"));session.finish();assert(!session.pending("unknown")&&messages.back().find("unavailable required capability: storage.settings")!=std::string::npos);
+ assert(!session.submit(unknown,true)&&session.error().find("unavailable required capability")!=std::string::npos);
  assert(session.begin(11,11,"session",111,700));session.end();assert(messages.back()=="session:1");
  const auto count=messages.size();assert(session.begin(11,11,"session",111,800));session.end();assert(messages.size()==count);
  assert(!session.begin(22,22,"session",222,900));

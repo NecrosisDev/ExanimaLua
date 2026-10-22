@@ -10,7 +10,7 @@ struct ScriptSource {
 class Session {
  struct Record {ScriptSource code;bool pending=true,waiting=false;};
  Host& host;std::vector<Record> records;
- uint64_t available=0;bool recoverable=false,inside=false;uint64_t owner=0,generation=0,identity=0,menuSince=0,nextRetry=0;
+ uint64_t available=0;bool recoverable=false,settled=false,inside=false;uint64_t owner=0,generation=0,identity=0,menuSince=0,nextRetry=0;
  bool menuClock=false;std::string phase="loading",lastFailure;
  bool fail(const std::string& message){lastFailure=message;return false;}
  static constexpr size_t sourceLimit=16*1024*1024;
@@ -23,7 +23,9 @@ class Session {
   size_t begin=0;while(begin<code.required.size()){
    const auto end=code.required.find(',',begin);const auto name=code.required.substr(begin,end==std::string::npos?end:end-begin);
    const uint64_t bit=capability(name);if(!bit)return fail("unknown required capability: "+name);
-   if(!(available&bit)&&(!recoverable||!(bit&itemApiCapabilities)))return fail("unavailable required capability: "+name);
+   // Until the native API has started at a settled title menu, any known capability may still arrive: the addon
+   // waits for it. After that (settled), a missing capability is final.
+   if(!(available&bit)&&(!recoverable||settled))return fail("unavailable required capability: "+name);
    if(end==std::string::npos)break;begin=end+1;
   }return true;
  }
@@ -33,8 +35,19 @@ class Session {
    if(!(available&bit))return false;if(end==std::string::npos)break;begin=end+1;
   }return true;
  }
+ std::string missing(const ScriptSource& code)const{
+  size_t begin=0;while(begin<code.required.size()){
+   const auto end=code.required.find(',',begin);const auto name=code.required.substr(begin,end==std::string::npos?end:end-begin);
+   if(!(available&capability(name)))return name;if(end==std::string::npos)break;begin=end+1;
+  }return {};
+ }
+ bool refuse(Record& record){
+  record.pending=false;record.waiting=false;lastFailure="unavailable required capability: "+missing(record.code)+
+   " (this game build or another mod blocks it; see the runtime lines above)";
+  host.report(record.code.id.c_str(),"error",lastFailure.c_str());return false;
+ }
  bool apply(Record& record){
-  if(!ready(record.code)){record.waiting=true;record.pending=false;return false;}
+  if(!ready(record.code)){if(settled)return refuse(record);record.waiting=true;record.pending=false;return false;}
   record.pending=false;record.waiting=false;const auto& c=record.code;
   const bool loaded=host.load(c.id,c.source.data(),c.source.size(),c.required,8*1024*1024,c.modules,c.optional);
   if(loaded)host.notifyPhase(phase,generation,c.id);else{lastFailure=host.error();host.report(c.id.c_str(),"error",lastFailure.c_str());}
@@ -43,6 +56,8 @@ class Session {
 public:
  explicit Session(Host& value):host(value){}
  void configure(uint64_t capabilities,bool canRecover){available=capabilities;recoverable=canRecover;host.capabilities(available);}
+ // The native API has started: capabilities are final, so addons still waiting on a missing one are refused.
+ void finish(){if(settled)return;settled=true;for(auto& record:records)if(record.waiting&&!ready(record.code))refuse(record);}
  const std::string& error()const{return lastFailure;}
  bool submit(const ScriptSource& code,bool queued){
   lastFailure.clear();if(!validate(code))return false;size_t total=code.bytes();
@@ -69,6 +84,6 @@ public:
  void consume(size_t budget=4){for(auto& record:records)if(record.pending||(record.waiting&&ready(record.code))){if(!budget--)break;apply(record);}}
  void tickTimers(){if(inside&&phase!="loading")host.runTimers();}
  void end(){inside=false;}
- void clear(){records.clear();host.clear();inside=false;owner=0;identity=0;phase="loading";menuClock=false;nextRetry=0;}
+ void clear(){records.clear();host.clear();inside=false;owner=0;identity=0;phase="loading";menuClock=false;nextRetry=0;settled=false;}
 };
 }

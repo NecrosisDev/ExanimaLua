@@ -497,6 +497,7 @@ button, 4 key binding, 5 text).
 | `int settings_tab_host_rows(int tab, int page, Row* out, int capacity)` | the rows to draw now; pointers stay valid until the next call |
 | `void settings_tab_host_change(...)` | forwards a widget change, with `change`'s arguments after `tab` |
 | `void settings_tab_host_event(int tab, int event)` | tab -1 for all tabs |
+| `int mod_settings_help(int id, wchar_t* out, int capacity)` | the help text of a Mod Settings row (the `id` from its rows), for a tooltip; returns its length, 0 when none; copies at most `capacity - 1` units and a terminator (0.28.0) |
 
 `activate` runs on the game's main thread inside the menu's activate; set a
 flag there and act later. `serve` runs on whatever thread reads the package,
@@ -519,7 +520,8 @@ resets every section to its defaults.
 
 ```lua
 settings.define("Grindstone", {
-  {key = "wear_rate", label = "Wear rate", type = "number", default = 1, min = 0, max = 3, step = 0.25},
+  {key = "wear_rate", label = "Wear rate", type = "number", default = 1, min = 0, max = 3, step = 0.25,
+   help = "How fast blades dull and armour wears in a fight"},
   {key = "notices", label = "Show notices", type = "toggle", default = true},
   {key = "mode", label = "Mode", type = "choice", default = "Normal", choices = {"Easy", "Normal", "Hard"}},
   {key = "use_key", label = "Use key", type = "key", default = 0},   -- 0 = unbound
@@ -528,8 +530,11 @@ local rate = settings.get("wear_rate")
 events.on("settings.changed", function(e) if e.key == "wear_rate" then rate = e.value end end)
 ```
 
+Keep labels to two or three words: the page has a narrow label column. Put the detail in the optional
+`help` (1..160 bytes), which a Settings host shows as the row's tooltip.
+
 Rules: 1..32 rows; keys use letters, digits, `_ . -` (48 bytes); labels 40
-bytes; titles 32; numbers need `min < max`, `step > 0` and at most 1000 steps;
+bytes; help 160; titles 32; numbers need `min < max`, `step > 0` and at most 1000 steps;
 2..16 choices of 24 bytes. A key row's value is a Windows virtual-key code;
 the player sets it by clicking the row and pressing a key (Delete clears it,
 Escape cancels). New key rows ship unbound (`default = 0`).

@@ -112,7 +112,7 @@ static int rows(void*,int page,settingstabs::Row* out,int room){
  auto push=[&](settingstabs::Row r,Ref ref){if(n>=room)return;r.id=int(refs.size());refs.push_back(ref);out[n++]=r;};
  settingstabs::Row r;r.kind=0;r.label=L"Profile";push(r,{});refs.back().what=-1;
  r={};r.kind=3;r.label=L"Profile";r.value=keep(wide(profile));push(r,{0});
- r={};r.kind=3;r.label=L"New profile";r.value=L"Copy these values";push(r,{1});
+ r={};r.kind=3;r.label=L"New profile";r.value=L"Copy";push(r,{1});
  for(size_t s=0;s<sections.size()&&n<room;++s){const auto& sec=sections[s];if(sec.defs.empty())continue;
   r={};r.kind=0;r.label=keep(wide(sec.title));push(r,{-1});
   for(size_t i=0;i<sec.defs.size()&&n<room;++i){const auto& d=sec.defs[i];const auto value=effective(v,sec,d);r={};
@@ -126,8 +126,19 @@ static int rows(void*,int page,settingstabs::Row* out,int room){
    r.label=keep(label);push(r,{2,s,i});}
  }
  bool natives=false;for(const auto& s:sections)natives=natives||s.native;
- if(natives&&n<room){r={};r.kind=5;r.label=L"* applies the next time the game starts";push(r,{-1});}
+ if(natives&&n<room){r={};r.kind=5;r.label=L"* after a restart";push(r,{-1});}
  return n;
+}
+// A row's help text (settings.define `help`), for a host that shows it as the row's tooltip. Returns its length in
+// UTF-16 units (0 when the row has none), copying at most capacity-1 of them and a terminator.
+static int help(int id,wchar_t* out,int capacity){
+ std::lock_guard<std::recursive_mutex> g(lock);if(id<0||size_t(id)>=refs.size())return 0;const auto& ref=refs[size_t(id)];
+ std::wstring text;
+ if(ref.what==0)text=L"The set of values in use; click for the next one";else if(ref.what==1)text=L"A new profile starting from these values";
+ else if(ref.what==2&&ref.section<sections.size()&&ref.def<sections[ref.section].defs.size())text=wide(sections[ref.section].defs[ref.def].help);
+ if(sections.size()>ref.section&&ref.what==2&&sections[ref.section].native)text+=(text.empty()?L"":L" ")+std::wstring(L"(applies after a restart)");
+ if(out&&capacity>0){const size_t n=(std::min)(text.size(),size_t(capacity-1));std::wmemcpy(out,text.data(),n);out[n]=0;}
+ return int(text.size());
 }
 static void change(void*,int page,int id,int kind,int delta,float position,int checked,int key){
  std::lock_guard<std::recursive_mutex> g(lock);if(page!=0||!editing||id<0||size_t(id)>=refs.size())return;const auto ref=refs[size_t(id)];
@@ -174,7 +185,7 @@ static void start(const std::filesystem::path& control){
  wchar_t name[64]{};GetPrivateProfileStringW(L"settings",L"profile",L"Default",name,64,settingsIni.c_str());
  activeProfile=validProfile(narrow(name))?narrow(name):"Default";committed=readProfile(activeProfile);
  // The console key's default is the ini's own [console] key (0 = unbound until the player picks one).
- SettingDef key;key.key="console_key";key.label="Open the console";key.type="key";key.fallback=std::to_string(console::toggleKey);
+ SettingDef key;key.key="console_key";key.label="Console key";key.help="Opens the console of mod messages and errors";key.type="key";key.fallback=std::to_string(console::toggleKey);
  sections.push_back({"runtime","Lua runtime",{key},{},false});
  std::error_code e;const auto mods=control.parent_path();
  for(const auto& folder:std::filesystem::directory_iterator(mods,e)){const auto toml=folder.path()/L"config.toml";if(!folder.is_directory(e)||!std::filesystem::is_regular_file(toml,e))continue;
