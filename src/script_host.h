@@ -135,7 +135,7 @@ struct GearResult { bool handled=false,restore=false,ignite=false;int wear=-1,di
 // A native call staged by a callback and made after it returns (native_calls_bridge.h).
 // One row an addon declares for the Mod Settings tab (settings.define). Values travel as text: "true"/"false",
 // a number, a choice's text, or a virtual-key code; fallback is the default in that form.
-struct SettingDef { std::string key,label,type;double minimum=0,maximum=1,step=1;std::vector<std::string> choices;std::string fallback,help; };
+struct SettingDef { std::string key,label,type;double minimum=0,maximum=1,step=1;std::vector<std::string> choices;std::string fallback,help;bool percent=false; };
 struct SettingChange { std::string key,value; };
 struct IdChange { uint32_t before=0,after=0; };   // item.id_changed
 // A target: one character by its live handle (a characters.read row or a character.hit event), the player, or every
@@ -983,7 +983,9 @@ private:
   lua_pushboolean(L,a->owner->shared.sound&&a->owner->shared.sound(std::string(name,n),float(volume)));return 1;
  }
  // settings.define(title, rows): this addon's section of the Mod Settings tab, declared while the addon loads.
- // Each row: {key=, label=, type="toggle"|"number"|"choice"|"key", default=, min=, max=, step=, choices={...}}.
+ // Each row: {key=, label=, type="toggle"|"number"|"choice"|"key", default=, min=, max=, step=, choices={...}}, or a
+ // sub-header {type="header", label=} (no key, no value). A number row with format="percent" shows value x 100 with
+ // a % sign (display only; the stored value is unchanged). Up to 48 rows.
  static std::string settingText(lua_State* L,int index,const SettingDef& d){
   if(d.type=="toggle"){if(!lua_isboolean(L,index))luaL_error(L,"setting '%s': default must be a boolean",d.key.c_str());return lua_toboolean(L,index)?"true":"false";}
   if(d.type=="number"){if(!lua_isnumber(L,index))luaL_error(L,"setting '%s': default must be a number",d.key.c_str());
@@ -1004,11 +1006,13 @@ private:
   if(!a->loading)return luaL_error(L,"settings.define is only allowed while the addon loads");
   if(!a->settingDefs.empty())return luaL_error(L,"settings.define was already called");
   size_t n=0;const char* title=luaL_checklstring(L,1,&n);if(!n||n>32||std::memchr(title,0,n))return luaL_error(L,"settings title must be 1..32 bytes");
-  luaL_checktype(L,2,LUA_TTABLE);const lua_Integer count=luaL_len(L,2);if(count<1||count>32)return luaL_error(L,"settings.define takes 1..32 rows");
+  luaL_checktype(L,2,LUA_TTABLE);const lua_Integer count=luaL_len(L,2);if(count<1||count>48)return luaL_error(L,"settings.define takes 1..48 rows");
   std::vector<SettingDef> defs;
   for(lua_Integer i=1;i<=count;++i){
    lua_rawgeti(L,2,i);if(!lua_istable(L,-1))return luaL_error(L,"settings row %d is not a table",int(i));const int row=lua_gettop(L);
-   SettingDef d;d.key=shortText(L,row,"key",48,true);d.label=shortText(L,row,"label",40,true);d.type=shortText(L,row,"type",8,true);d.help=shortText(L,row,"help",160,false);
+   SettingDef d;d.type=shortText(L,row,"type",8,true);d.label=shortText(L,row,"label",40,true);d.help=shortText(L,row,"help",160,false);
+   if(d.type=="header"){d.key="#header"+std::to_string(i);lua_settop(L,row-1);defs.push_back(std::move(d));continue;}   // a sub-header line
+   d.key=shortText(L,row,"key",48,true);
    for(const auto& x:defs)if(x.key==d.key)return luaL_error(L,"duplicate setting key '%s'",d.key.c_str());
    for(char c:d.key)if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='.'||c=='-'))return luaL_error(L,"setting key '%s' may use letters, digits, _ . - only",d.key.c_str());
    if(d.type=="number"){
@@ -1016,6 +1020,8 @@ private:
      if(!lua_isnumber(L,-1))return luaL_error(L,"setting '%s': number rows need min, max and step",d.key.c_str());*target=lua_tonumber(L,-1);lua_pop(L,1);}
     if(!std::isfinite(d.minimum)||!std::isfinite(d.maximum)||!std::isfinite(d.step)||d.step<=0||d.maximum<=d.minimum||(d.maximum-d.minimum)/d.step>1000.5)
      return luaL_error(L,"setting '%s': min < max, step > 0 and at most 1000 steps",d.key.c_str());
+    const auto format=shortText(L,row,"format",8,false);if(!format.empty()&&format!="percent")return luaL_error(L,"setting '%s': format is \"percent\" or absent",d.key.c_str());
+    d.percent=format=="percent";
    }else if(d.type=="choice"){
     lua_getfield(L,row,"choices");if(!lua_istable(L,-1))return luaL_error(L,"setting '%s': choice rows need choices={...}",d.key.c_str());
     const lua_Integer k=luaL_len(L,-1);if(k<2||k>16)return luaL_error(L,"setting '%s': 2..16 choices",d.key.c_str());
@@ -1023,7 +1029,7 @@ private:
      if(lua_type(L,-1)!=LUA_TSTRING||!m||m>24||std::memchr(s,0,m))return luaL_error(L,"setting '%s': choices are 1..24-byte strings",d.key.c_str());
      d.choices.emplace_back(s,m);lua_pop(L,1);}
     lua_pop(L,1);
-   }else if(d.type!="toggle"&&d.type!="key")return luaL_error(L,"setting '%s': type is toggle, number, choice or key",d.key.c_str());
+   }else if(d.type!="toggle"&&d.type!="key")return luaL_error(L,"setting '%s': type is toggle, number, choice, key or header",d.key.c_str());
    lua_getfield(L,row,"default");if(lua_isnil(L,-1))return luaL_error(L,"setting '%s' needs a default",d.key.c_str());
    d.fallback=settingText(L,-1,d);lua_settop(L,row-1);defs.push_back(std::move(d));
   }

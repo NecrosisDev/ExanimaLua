@@ -106,7 +106,7 @@ static std::wstring keyName(int vk){
  if((vk>=VK_PRIOR&&vk<=VK_HELP)||vk==VK_DIVIDE||vk==VK_NUMLOCK||vk==VK_RCONTROL||vk==VK_RMENU)l|=1<<24;
  wchar_t b[32]{};if(scan&&GetKeyNameTextW(l,b,32))return b;return L"Key "+std::to_wstring(vk);
 }
-static std::wstring numberText(double v){wchar_t b[16];swprintf(b,16,L"%.4g",v);return b;}
+static std::wstring numberText(double v,bool percent=false){wchar_t b[24];if(percent)swprintf(b,24,L"%.4g %%",v*100.0);else swprintf(b,24,L"%.4g",v);return b;}
 static int rows(void*,int page,settingstabs::Row* out,int room){
  std::lock_guard<std::recursive_mutex> g(lock);refs.clear();texts.clear();if(page!=0)return 0;
  const Values& v=editing?staged:committed;const std::string& profile=editing?stagedProfile:activeProfile;int n=0;
@@ -117,10 +117,11 @@ static int rows(void*,int page,settingstabs::Row* out,int room){
  for(size_t s=0;s<sections.size()&&n<room;++s){const auto& sec=sections[s];if(sec.defs.empty())continue;
   r={};r.kind=0;r.label=keep(wide(sec.title));push(r,{-3,s});
   for(size_t i=0;i<sec.defs.size()&&n<room;++i){const auto& d=sec.defs[i];const auto value=effective(v,sec,d);r={};
-   std::wstring label=wide(d.label);if(sec.native&&d.type!="info")label+=L" *";
-   if(d.type=="toggle"){r.kind=1;r.checked=value=="true";}
+   std::wstring label=wide(d.label);if(sec.native&&d.type!="info"&&d.type!="header")label+=L" *";
+   if(d.type=="header"){r.kind=5;r.inactive=1;r.value=L"";}   // a sub-header: a dimmed text line with no value
+   else if(d.type=="toggle"){r.kind=1;r.checked=value=="true";}
    else if(d.type=="number"){r.kind=2;const double x=std::strtod(value.c_str(),nullptr);r.steps=int(std::lround((d.maximum-d.minimum)/d.step));
-    r.position=float(std::clamp((x-d.minimum)/(d.maximum-d.minimum),0.0,1.0));r.value=keep(numberText(x));}
+    r.position=float(std::clamp((x-d.minimum)/(d.maximum-d.minimum),0.0,1.0));r.value=keep(numberText(x,d.percent));}
    else if(d.type=="choice"){r.kind=3;r.value=keep(wide(value));}
    else if(d.type=="key"){r.kind=4;r.value=keep(keyName(std::atoi(value.c_str())));}
    else{r.kind=5;r.value=keep(wide(value));}
