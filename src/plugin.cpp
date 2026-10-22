@@ -144,7 +144,7 @@ static bool activateItems(){
  else host.report("runtime","info",scriptcommands::logRegistered?(scriptcommands::number?"LuaEvent/LuaFlag/LuaLog registered":"LuaEvent/LuaFlag/LuaLog registered (event.number unavailable: argument reader did not match)"):"LuaEvent/LuaFlag registered (LuaLog name taken)");
  if(!zones::install())host.report("runtime","warn","Zone events unavailable: zone runner guard or hook failed");
  else host.report("runtime","info","Zone events ready");
- if(!gamemessages::install())host.report("runtime","warn","Game messages unavailable: the message slot holds something other than the game's logger");
+ if(!gamemessages::install())host.report("runtime","warn",("Game messages unavailable: "+gamemessages::why).c_str());
  else host.report("runtime","info","Game messages forwarded to this log");
  host.report("runtime","info",worldtime::set?"World time ready":"World time unavailable: clock functions did not match");
  if(!inventorybridge::possible||!gear::install())host.report("runtime","warn","gear.use unavailable: use gate guard or hook failed");

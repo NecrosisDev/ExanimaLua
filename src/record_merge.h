@@ -97,6 +97,12 @@ inline bool mergeStrings(std::string& bytes,const std::vector<Mod>& list,std::ve
   const uint32_t n=rd(s,4)/16;const size_t mp=8+rd(s,4);
   if(entries.size()>=m->firstString){notes.push_back(m->id+": its strings start at "+std::to_string(m->firstString)+" but that index is taken");continue;}
   if(m->firstString+n-1>m->lastString){notes.push_back(m->id+": it has more strings than its range");continue;}
+  // A whole objstrings that a mod (or an older version of it) still installs already holds these texts: adding
+  // them again would only grow the table, so a mod whose every string is present is skipped.
+  bool present=n>0;
+  for(uint32_t i=0;i<n&&present;++i){const uint32_t o=rd(s,16+16*i),z=rd(s,20+16*i);if(mp+uint64_t(o)+z>s.size()){present=false;break;}
+   const auto text=s.substr(mp+o,z);present=std::any_of(entries.begin(),entries.end(),[&](const Entry& e){return e.text==text;});}
+  if(present){notes.push_back(m->id+": its strings are already in objstrings; not added again");continue;}
   while(entries.size()+1<m->firstString)entries.push_back({0,1,std::string()});
   for(uint32_t i=0;i<n;++i){const uint32_t o=rd(s,16+16*i),z=rd(s,20+16*i);if(mp+uint64_t(o)+z>s.size())break;entries.push_back({rd(s,8+16*i),rd(s,12+16*i),s.substr(mp+o,z)});}
   placed=true;

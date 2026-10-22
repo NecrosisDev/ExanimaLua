@@ -119,7 +119,7 @@ static void readSettings(const std::filesystem::path& ini){
  toggleKey=GetPrivateProfileIntW(L"console",L"key",0,ini.c_str());if(toggleKey>0xfe)toggleKey=0;
 }
 // ---- drawing (render thread, GL context current) ----
-static HGLRC fontContext=nullptr;static GLuint fontBase=0;static int fontHeight=16;static HFONT font=nullptr;
+static HGLRC fontContext=nullptr;static GLuint fontBase=0;static int fontHeight=22,charWidth=12;static HFONT font=nullptr;
 static bool keyWas[256]{};static bool clickWas=false;
 static bool pressed(unsigned vk){const bool down=(GetAsyncKeyState(int(vk))&0x8000)!=0;const bool edge=down&&!keyWas[vk&0xff];keyWas[vk&0xff]=down;return edge;}
 static void ensureFont(HDC dc){
@@ -127,7 +127,8 @@ static void ensureFont(HDC dc){
  if(current==fontContext&&fontBase)return;
  if(!font)font=CreateFontW(-fontHeight,0,0,0,FW_NORMAL,0,0,0,ANSI_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,FIXED_PITCH,L"Consolas");
  const GLuint base=glGenLists(256);if(!base)return;
- const HGDIOBJ old=SelectObject(dc,font);const BOOL ok=wglUseFontBitmapsA(dc,0,256,base);SelectObject(dc,old);
+ const HGDIOBJ old=SelectObject(dc,font);const BOOL ok=wglUseFontBitmapsA(dc,0,256,base);
+ SIZE m{};if(GetTextExtentPoint32W(dc,L"M",1,&m)&&m.cx>0)charWidth=m.cx;SelectObject(dc,old);
  if(!ok){glDeleteLists(base,256);return;}
  fontBase=base;fontContext=current;
 }
@@ -149,20 +150,20 @@ static void drawBody(HDC dc,HWND window){
   const ULONGLONG now=GetTickCount64();std::vector<Toast> live;
   AcquireSRWLockExclusive(&lock);while(!toasts.empty()&&toasts.front().until<=now)toasts.pop_front();live.assign(toasts.begin(),toasts.end());ReleaseSRWLockExclusive(&lock);
   int y=h-int(h*0.18)-int(live.size())*(row+8);
-  for(const auto& t:live){const float a=(std::min)(1.f,float(t.until-now)/800.f);const int tw=int(t.text.size())*9+24,x=(w-tw)/2;
+  for(const auto& t:live){const float a=(std::min)(1.f,float(t.until-now)/800.f);const int tw=int(t.text.size())*charWidth+24,x=(w-tw)/2;
    glColor4f(.06f,.05f,.04f,.8f*a);quad(x,y,x+tw,y+row+6);glColor4f(.94f,.88f,.74f,a);text(x+12,y+row-1,t.text);y+=row+8;}
  }
  if(!open.load()){
   const unsigned unseen=unseenErrors.load();
   if(unseen){const std::string badge=" "+std::to_string(unseen)+(unseen==1?" mod error ":" mod errors ");
-   const int bw=int(badge.size())*9+8;glColor4f(.35f,.05f,.04f,.85f);quad(w-bw-12,12,w-12,12+row+4);glColor4f(1.f,.55f,.45f,1.f);text(w-bw-8,12+row-2,badge);}
+   const int bw=int(badge.size())*charWidth+8;glColor4f(.35f,.05f,.04f,.85f);quad(w-bw-12,12,w-12,12+row+4);glColor4f(1.f,.55f,.45f,1.f);text(w-bw-8,12+row-2,badge);}
  }else{
   const int x0=24,y0=24,x1=w-24,y1=int(h*0.62);
   glColor4f(.06f,.05f,.04f,.86f);quad(x0,y0,x1,y1);glColor4f(.55f,.45f,.3f,.9f);quad(x0,y0+row+8,x1,y0+row+10);
   static const char* names[3]={"All","Warnings","Errors"};int bx=x0+12;
   POINT p{};GetCursorPos(&p);if(window)ScreenToClient(window,&p);const bool down=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0,click=down&&!clickWas;clickWas=down;
-  glColor4f(.92f,.86f,.72f,1.f);text(bx,y0+row,"MOD CONSOLE");bx+=150;
-  for(int i=0;i<3;++i){const std::string label=std::string("[")+names[i]+"]";const int bw=int(label.size())*9;
+  glColor4f(.92f,.86f,.72f,1.f);text(bx,y0+row,"MOD CONSOLE");bx+=charWidth*13;
+  for(int i=0;i<3;++i){const std::string label=std::string("[")+names[i]+"]";const int bw=int(label.size())*charWidth;
    if(click&&p.x>=bx&&p.x<bx+bw&&p.y>=y0&&p.y<y0+row+8){filter=i;scroll=0;}
    if(filter==i)glColor4f(1.f,.85f,.45f,1.f);else glColor4f(.6f,.56f,.5f,1.f);text(bx,y0+row,label);bx+=bw+16;}
   glColor4f(.6f,.56f,.5f,1.f);text(bx+8,y0+row,"Tab: filter  PgUp/PgDn: scroll");

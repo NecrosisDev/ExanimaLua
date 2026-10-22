@@ -25,13 +25,18 @@ static uint32_t sink(uint32_t level,const char* caption,const char* text){
  const auto next=previous.load();return next?next(level,caption,text):level;
 }
 // The slot must hold the shipped logger or the release stub (0x187f0: mov eax,ecx; ret). Anything else belongs to
-// another mod, which is left in place.
+// another mod, which is left in place. EMTK remaps the image at startup, which leaves .data execute-read-write, so
+// any writable protection is accepted. On failure `why` says what was found.
+static std::string why;
 static bool install(){
  if(installed)return true;
  const unsigned char logger[]={0x55,0x48,0x89,0xe5,0x48,0x8d,0x64,0x24,0xa0,0x48,0x89,0x5d,0xc8,0x89,0xcb};const unsigned char stub[]={0x89,0xc8,0xc3};
  const auto slot=base+0x2ab6b0;uintptr_t current=0;MEMORY_BASIC_INFORMATION m{};
- if(!copyWorldMemory(slot,&current,8)||VirtualQuery((void*)slot,&m,sizeof m)!=sizeof m||!(m.Protect&(PAGE_READWRITE|PAGE_WRITECOPY)))return false;
- if(!((current==base+0x25d80&&gamebridge::operation(current,logger,sizeof logger))||(current==base+0x187f0&&gamebridge::operation(current,stub,sizeof stub))))return false;
+ if(!copyWorldMemory(slot,&current,8)||VirtualQuery((void*)slot,&m,sizeof m)!=sizeof m){why="the message slot could not be read";return false;}
+ if(!(m.Protect&(PAGE_READWRITE|PAGE_WRITECOPY|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY))){char b[64];snprintf(b,sizeof b,"the message slot is not writable (protection 0x%lx)",m.Protect);why=b;return false;}
+ if(!((current==base+0x25d80&&gamebridge::operation(current,logger,sizeof logger))||(current==base+0x187f0&&gamebridge::operation(current,stub,sizeof stub)))){
+  char b[96];if(current>=base&&current<base+0x4000000)snprintf(b,sizeof b,"the message slot points at game code +0x%llx, not the logger",(unsigned long long)(current-base));
+  else snprintf(b,sizeof b,"the message slot points outside the game (another mod's handler)");why=b;return false;}
  previous=(Sink)current;
  // Pointer-sized aligned exchange; it fails, and nothing changes, if the slot moved since it was read.
  installed=InterlockedCompareExchangePointer((PVOID*)slot,(PVOID)&sink,(PVOID)current)==(PVOID)current;

@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import atexit
 
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[1] if len(HERE.parents)>1 else HERE   # a repository at a drive root has no workspace above it
@@ -38,6 +39,9 @@ def main():
     if docs.returncode:raise SystemExit('API.md does not match the runtime; see above')
     out.mkdir(parents=True)
     stage=Path(tempfile.mkdtemp(prefix='Exanima-Lua-'))
+    # The stage (about 100 MB of objects and test programs) is removed when the build ends, passed or failed;
+    # build.log in --out keeps the compiler and test output.
+    atexit.register(shutil.rmtree,stage,True)
     source_files=sorted(p for p in (HERE/'src').glob('*') if p.is_file())
     for file in source_files:
         shutil.copyfile(file,stage/file.name)
@@ -113,7 +117,6 @@ def main():
     result=subprocess.run(['cmd.exe','/d','/c',str(stage/'build.cmd')],cwd=stage,env=env,capture_output=True)
     (out/'build.log').write_bytes(result.stdout+result.stderr)
     print((result.stdout+result.stderr).decode(errors='replace')[-4000:])
-    print('STAGE='+str(stage))
     if result.returncode:raise SystemExit(result.returncode)
     mod=out/'mods'/ID;mod.mkdir(parents=True)
     shutil.copyfile(stage/'ScriptRuntime.dll',mod/'ScriptRuntime.dll')
