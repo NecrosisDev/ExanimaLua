@@ -1,15 +1,16 @@
 name: All mods
 
-# Rebuilds ExanimaMods.zip from every mod's newest release and keeps it on the "all-mods" release. It runs after
-# each runtime build on main, every six hours to pick up new mod releases, and on demand; when no release changed
-# since the last bundle it publishes nothing.
+# Polls every mod repository for new main commits. It publishes only after every selected release ZIP is built
+# from that repository's current main commit, so an unreleased source change never ships with a stale ZIP.
 on:
   workflow_run:
     workflows: [Build]
     types: [completed]
     branches: [main]
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '*/5 * * * *'
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -34,22 +35,65 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - name: Wait for fresh releases from every mod repository
+        id: freshness
+        run: python -X utf8 -B allmods_status.py dist/allmods-commits.txt
       - name: Build the bundle from the newest releases
+        if: ${{ steps.freshness.outputs.ready == 'true' }}
         run: python -X utf8 -B bundle.py --download
-      - name: Publish it on the all-mods release
+      - name: Publish the current and previous all-mods releases
+        if: ${{ steps.freshness.outputs.ready == 'true' }}
+        env:
+          SOURCE_COMMITS: dist/allmods-commits.txt
         run: |
           notes="Every NecrosisDev mod in one download, with the patched EMTK and an installer.
           Unzip it and run Install.cmd with Exanima closed.
 
           Built from:
-          $(sed 's/^/- /' dist/ExanimaMods-sources.txt)"
+          $(sed 's/^/- /' dist/ExanimaMods-sources.txt)
+
+          Current main commits observed:
+          $(sed 's/^/- /' "$SOURCE_COMMITS")"
           notes="$(sed 's/^ *//' <<< "$notes")"
-          if ! gh release view all-mods --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release create all-mods dist/ExanimaMods.zip dist/ExanimaMods.zip.sha256 --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" --title "All mods" --notes "$notes" --latest
-          elif [[ "$(gh release view all-mods --repo "$GITHUB_REPOSITORY" --json body --jq .body)" == "$notes" ]]; then
-            echo "No mod release changed since the last bundle"
-          else
-            gh release upload all-mods dist/ExanimaMods.zip dist/ExanimaMods.zip.sha256 --repo "$GITHUB_REPOSITORY" --clobber
-            gh release edit all-mods --repo "$GITHUB_REPOSITORY" --notes "$notes" --latest
+
+          current_body=""
+          if gh release view all-mods --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            current_body="$(gh release view all-mods --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
           fi
+
+          if [[ "$current_body" != "$notes" ]]; then
+            if [[ -n "$current_body" ]]; then
+              previous="$(mktemp -d)"
+              gh release download all-mods --repo "$GITHUB_REPOSITORY" --pattern 'ExanimaMods.zip*' --dir "$previous"
+              old_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/all-mods" --jq .object.sha)"
+              old_type="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/all-mods" --jq .object.type)"
+              if [[ "$old_type" == "tag" ]]; then
+                old_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$old_sha" --jq .object.sha)"
+              fi
+              if gh release view all-mods-old --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+                gh release delete all-mods-old --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+              fi
+              gh release create all-mods-old "$previous"/ExanimaMods.zip* --repo "$GITHUB_REPOSITORY" \
+                --target "$old_sha" --title "[OLD] All mods" --notes "$current_body" --latest=false
+              rm -rf "$previous"
+            fi
+
+            if gh release view all-mods --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              gh release upload all-mods dist/ExanimaMods.zip dist/ExanimaMods.zip.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+              gh release edit all-mods --repo "$GITHUB_REPOSITORY" --title "All mods" --notes "$notes" --latest
+            else
+              gh release create all-mods dist/ExanimaMods.zip dist/ExanimaMods.zip.sha256 --repo "$GITHUB_REPOSITORY" \
+                --target "$GITHUB_SHA" --title "All mods" --notes "$notes" --latest
+            fi
+          else
+            echo "No packaged mod commit changed since the last all-mods release"
+          fi
+
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/all-mods" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          releases="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName')"
+          while IFS= read -r tag; do
+            case "$tag" in
+              all-mods|all-mods-old) ;;
+              all-mods-*) gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag ;;
+            esac
+          done <<< "$releases"
